@@ -332,6 +332,7 @@ def main():
     args.device = 'cuda:0'
     args.world_size = 1
     args.rank = 0  # global rank
+    args.local_rank = int(os.environ["LOCAL_RANK"])
     if args.distributed:
         args.device = 'cuda:%d' % args.local_rank
         torch.cuda.set_device(args.local_rank)
