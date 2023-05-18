@@ -614,15 +614,15 @@ def main():
             if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)
 
-            # train_metrics = train_one_epoch(
-            #     epoch, model, loader_train, optimizer, train_loss_fn, args,
-            #     lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-            #     amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
+            train_metrics = train_one_epoch(
+                epoch, model, loader_train, optimizer, train_loss_fn, args,
+                lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
+                amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
 
-            # if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-            #     if args.local_rank == 0:
-            #         _logger.info("Distributing BatchNorm running means and vars")
-            #     distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
+            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+                if args.local_rank == 0:
+                    _logger.info("Distributing BatchNorm running means and vars")
+                distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
             eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
 
