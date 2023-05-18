@@ -37,6 +37,8 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
 
+from datasets import load_dataset
+
 try:
     from apex import amp
     from apex.parallel import DistributedDataParallel as ApexDDP
@@ -71,14 +73,14 @@ parser.add_argument('-c', '--config', default='', type=str, metavar='FILE',
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 
 # Dataset / Model parameters
-parser.add_argument('data_dir', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('--dataset', '-d', metavar='NAME', default='',
-                    help='dataset type (default: ImageFolder/ImageTar if empty)')
-parser.add_argument('--train-split', metavar='NAME', default='train',
-                    help='dataset train split (default: train)')
-parser.add_argument('--val-split', metavar='NAME', default='validation',
-                    help='dataset validation split (default: validation)')
+# parser.add_argument('data_dir', metavar='DIR',
+#                     help='path to dataset')
+# parser.add_argument('--dataset', '-d', metavar='NAME', default='',
+#                     help='dataset type (default: ImageFolder/ImageTar if empty)')
+# parser.add_argument('--train-split', metavar='NAME', default='train',
+#                     help='dataset train split (default: train)')
+# parser.add_argument('--val-split', metavar='NAME', default='validation',
+#                     help='dataset validation split (default: validation)')
 parser.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                     help='Name of model to train (default: "resnet50"')
 parser.add_argument('--pretrained', action='store_true', default=False,
@@ -483,13 +485,19 @@ def main():
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
-    dataset_train = create_dataset(
-        args.dataset,
-        root=args.data_dir, split=args.train_split, is_training=True,
-        batch_size=args.batch_size, repeats=args.epoch_repeats)
-    dataset_eval = create_dataset(
-        args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
-
+    # dataset_train = create_dataset(
+    #     args.dataset,
+    #     root=args.data_dir, split=args.train_split, is_training=True,
+    #     batch_size=args.batch_size, repeats=args.epoch_repeats)
+    # dataset_eval = create_dataset(
+    #     args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
+    dataset_train = load_dataset('imagenet-1k', split='train', use_auth_token=True, streaming=True)
+    dataset_eval = load_dataset('imagenet-1k', split='validation', use_auth_token=True, streaming=True)
+    
+    def train_map(example):
+        return (example["image"], example["label"])
+    dataset_train.map()
+    
     # setup mixup / cutmix
     collate_fn = None
     mixup_fn = None
@@ -606,15 +614,15 @@ def main():
             if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 loader_train.sampler.set_epoch(epoch)
 
-            train_metrics = train_one_epoch(
-                epoch, model, loader_train, optimizer, train_loss_fn, args,
-                lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-                amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
+            # train_metrics = train_one_epoch(
+            #     epoch, model, loader_train, optimizer, train_loss_fn, args,
+            #     lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
+            #     amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
 
-            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
-                distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
+            # if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+            #     if args.local_rank == 0:
+            #         _logger.info("Distributing BatchNorm running means and vars")
+            #     distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
             eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
 
@@ -664,14 +672,17 @@ def train_one_epoch(
     model.train()
 
     end = time.time()
-    last_idx = len(loader) - 1
-    num_updates = epoch * len(loader)
+    # last_idx = len(loader) - 1
+    last_idx = 1281167 - 1
+    # num_updates = epoch * len(loader)
+    num_updates = epoch * 1281167
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
 
         if lr_scheduler is not None:
-            lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
+            # lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
+            lr_scheduler.step_frac(epoch + (batch_idx + 1) / 1281167)
 
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
@@ -725,7 +736,8 @@ def train_one_epoch(
                     'LR: {lr:.3e}  '
                     'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         epoch,
-                        batch_idx, len(loader),
+                        # batch_idx, len(loader),
+                        batch_idx, 1281167,
                         100. * batch_idx / last_idx,
                         loss=losses_m,
                         batch_time=batch_time_m,
@@ -766,7 +778,8 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     model.eval()
 
     end = time.time()
-    last_idx = len(loader) - 1
+    # last_idx = len(loader) - 1
+    last_idx = 50000 - 1
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx

@@ -21,6 +21,8 @@ from .mixup import FastCollateMixup
 
 def fast_collate(batch):
     """ A fast collation function optimized for uint8 images (np array or torch) and int64 targets (labels)"""
+    if isinstance(batch[0], dict):
+        batch = [(b["image"], b["label"]) for b in batch]
     assert isinstance(batch[0], tuple)
     batch_size = len(batch)
     if isinstance(batch[0][0], tuple):
@@ -181,7 +183,7 @@ def create_loader(
     if re_split:
         # apply RE to second half of batch if no aug split otherwise line up with aug split
         re_num_splits = num_aug_splits or 2
-    dataset.transform = create_transform(
+    augs = create_transform(
         input_size,
         is_training=is_training,
         use_prefetcher=use_prefetcher,
@@ -203,6 +205,10 @@ def create_loader(
         re_num_splits=re_num_splits,
         separate=num_aug_splits > 0,
     )
+    def transforms(examples):
+        examples["image"] = augs(examples["image"].convert("RGB"))
+        return examples
+    dataset = dataset.map(transforms)
 
     sampler = None
     if distributed and not isinstance(dataset, torch.utils.data.IterableDataset):
