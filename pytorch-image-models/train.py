@@ -17,6 +17,7 @@ Hacked together by / Copyright 2020 Ross Wightman (https://github.com/rwightman)
 import argparse
 import time
 import yaml
+import math
 import os
 import logging
 from collections import OrderedDict
@@ -83,6 +84,7 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 #                     help='dataset validation split (default: validation)')
 parser.add_argument('--model', default='resnet50', type=str, metavar='MODEL',
                     help='Name of model to train (default: "resnet50"')
+parser.add_argument('--nnodes', type=int)
 parser.add_argument('--pretrained', action='store_true', default=False,
                     help='Start with pretrained version of specified network (if avail)')
 parser.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH',
@@ -617,6 +619,7 @@ def main():
 
             train_metrics = train_one_epoch(
                 epoch, model, loader_train, optimizer, train_loss_fn, args,
+                batch_size=args.batch_size, num_gpus=args.nnodes,
                 lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
                 amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
 
@@ -625,13 +628,16 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            eval_metrics = validate(model, loader_eval, validate_loss_fn, args,
+                batch_size=args.batch_size, num_gpus=args.nnodes, amp_autocast=amp_autocast)
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
                 ema_eval_metrics = validate(
-                    model_ema.module, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
+                    model_ema.module, loader_eval, validate_loss_fn, args, 
+                    batch_size=args.batch_size, num_gpus=args.nnodes,
+                    amp_autocast=amp_autocast, log_suffix=' (EMA)')
                 eval_metrics = ema_eval_metrics
 
             if lr_scheduler is not None:
@@ -656,8 +662,9 @@ def main():
 
 def train_one_epoch(
         epoch, model, loader, optimizer, loss_fn, args,
+        batch_size, num_gpus,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
-        loss_scaler=None, model_ema=None, mixup_fn=None):
+        loss_scaler=None, model_ema=None, mixup_fn=None,):
 
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher and loader.mixup_enabled:
@@ -674,16 +681,17 @@ def train_one_epoch(
 
     end = time.time()
     # last_idx = len(loader) - 1
-    last_idx = 1281167 - 1
+    len_loader = math.ceil(1281167 / (batch_size * num_gpus))
+    last_idx = len_loader - 1
     # num_updates = epoch * len(loader)
-    num_updates = epoch * 1281167
+    num_updates = epoch * len_loader
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
 
         if lr_scheduler is not None:
             # lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
-            lr_scheduler.step_frac(epoch + (batch_idx + 1) / 1281167)
+            lr_scheduler.step_frac(epoch + (batch_idx + 1) / len_loader)
 
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
@@ -738,7 +746,7 @@ def train_one_epoch(
                     'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         epoch,
                         # batch_idx, len(loader),
-                        batch_idx, 1281167,
+                        batch_idx, len_loader,
                         100. * batch_idx / last_idx,
                         loss=losses_m,
                         batch_time=batch_time_m,
@@ -770,7 +778,7 @@ def train_one_epoch(
     return OrderedDict([('loss', losses_m.avg)])
 
 
-def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
+def validate(model, loader, loss_fn, args, batch_size, num_gpus, amp_autocast=suppress, log_suffix=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
@@ -779,8 +787,9 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     model.eval()
 
     end = time.time()
+    len_loader = math.ceil(50000 / (batch_size * num_gpus))
     # last_idx = len(loader) - 1
-    last_idx = 50000 - 1
+    last_idx = len_loader - 1
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
