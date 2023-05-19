@@ -39,6 +39,7 @@ from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
 
 from datasets import load_dataset
+from datasets.distributed import split_dataset_by_node
 
 try:
     from apex import amp
@@ -496,7 +497,9 @@ def main():
     #     args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
     dataset_train = load_dataset('imagenet-1k', split='train', use_auth_token=True, streaming=True)
     dataset_eval = load_dataset('imagenet-1k', split='validation', use_auth_token=True, streaming=True)
-    
+    dataset_train = split_dataset_by_node(dataset_train, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
+    dataset_eval = split_dataset_by_node(dataset_eval, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
+
     def train_map(example):
         return (example["image"], example["label"])
     dataset_train.map()
