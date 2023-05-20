@@ -673,18 +673,14 @@ def train_one_epoch(
     model.train()
 
     end = time.time()
-    # last_idx = len(loader) - 1
-    len_loader = math.ceil(1281167 / (batch_size * num_gpus))
-    last_idx = len_loader - 1
-    # num_updates = epoch * len(loader)
-    num_updates = epoch * len_loader
+    last_idx = len(loader) - 1
+    num_updates = epoch * len(loader)
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
 
         if lr_scheduler is not None:
-            # lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
-            lr_scheduler.step_frac(epoch + (batch_idx + 1) / len_loader)
+            lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
 
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
@@ -738,8 +734,7 @@ def train_one_epoch(
                     'LR: {lr:.3e}  '
                     'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
                         epoch,
-                        # batch_idx, len(loader),
-                        batch_idx, len_loader,
+                        batch_idx, len(loader),
                         100. * batch_idx / last_idx,
                         loss=losses_m,
                         batch_time=batch_time_m,
@@ -771,7 +766,7 @@ def train_one_epoch(
     return OrderedDict([('loss', losses_m.avg)])
 
 
-def validate(model, loader, loss_fn, args, batch_size, num_gpus, amp_autocast=suppress, log_suffix=''):
+def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
@@ -780,9 +775,7 @@ def validate(model, loader, loss_fn, args, batch_size, num_gpus, amp_autocast=su
     model.eval()
 
     end = time.time()
-    len_loader = math.ceil(50000 / (batch_size * num_gpus))
-    # last_idx = len(loader) - 1
-    last_idx = len_loader - 1
+    last_idx = len(loader) - 1
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
@@ -839,3 +832,4 @@ def validate(model, loader, loss_fn, args, batch_size, num_gpus, amp_autocast=su
 
 if __name__ == '__main__':
     main()
+    
