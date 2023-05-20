@@ -39,7 +39,6 @@ from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
 
 from datasets import Dataset, concatenate_datasets
-from datasets.distributed import split_dataset_by_node
 
 try:
     from apex import amp
@@ -491,8 +490,6 @@ def main():
     # load dataset
     dataset_train = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-train-{i:05d}-of-00257.arrow") for i in range(257)])
     dataset_eval = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-validation-{i:05d}-of-00013.arrow",) for i in range(13)])
-    dataset_train = split_dataset_by_node(dataset_train, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
-    dataset_eval = split_dataset_by_node(dataset_eval, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
 
     # setup mixup / cutmix
     collate_fn = None
