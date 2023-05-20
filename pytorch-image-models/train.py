@@ -500,10 +500,6 @@ def main():
     dataset_train = split_dataset_by_node(dataset_train, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
     dataset_eval = split_dataset_by_node(dataset_eval, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
 
-    def train_map(example):
-        return (example["image"], example["label"])
-    dataset_train.map()
-    
     # setup mixup / cutmix
     collate_fn = None
     mixup_fn = None
