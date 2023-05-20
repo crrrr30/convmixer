@@ -206,9 +206,9 @@ def create_loader(
         separate=num_aug_splits > 0,
     )
     def transforms(examples):
-        examples["image"] = augs(examples["image"].convert("RGB"))
+        examples["image"] = [augs(img.convert("RGB")) for img in examples["image"]]
         return examples
-    dataset = dataset.map(transforms)
+    dataset.set_transform(transforms)
 
     sampler = None
     if distributed and not isinstance(dataset, torch.utils.data.IterableDataset):

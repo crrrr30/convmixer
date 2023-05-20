@@ -38,7 +38,7 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
 
-from datasets import load_dataset
+from datasets import Dataset, concatenate_datasets
 from datasets.distributed import split_dataset_by_node
 
 try:
@@ -488,22 +488,12 @@ def main():
     if args.local_rank == 0:
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
-    # create the train and eval datasets
-    # dataset_train = create_dataset(
-    #     args.dataset,
-    #     root=args.data_dir, split=args.train_split, is_training=True,
-    #     batch_size=args.batch_size, repeats=args.epoch_repeats)
-    # dataset_eval = create_dataset(
-    #     args.dataset, root=args.data_dir, split=args.val_split, is_training=False, batch_size=args.batch_size)
-    dataset_train = load_dataset('imagenet-1k', split='train', use_auth_token=True, streaming=True)
-    dataset_eval = load_dataset('imagenet-1k', split='validation', use_auth_token=True, streaming=True)
+    # load dataset
+    dataset_train = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-train-{i:05d}-of-00257.arrow") for i in range(257)])
+    dataset_eval = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-validation-{i:05d}-of-00013.arrow",) for i in range(13)])
     dataset_train = split_dataset_by_node(dataset_train, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
     dataset_eval = split_dataset_by_node(dataset_eval, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
 
-    def train_map(example):
-        return (example["image"], example["label"])
-    dataset_train.map()
-    
     # setup mixup / cutmix
     collate_fn = None
     mixup_fn = None
