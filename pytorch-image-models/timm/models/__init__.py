@@ -5,6 +5,7 @@ from .cait import *
 from .coat import *
 from .convit import *
 from .convmixer import *
+from .asmlp import *
 from .crossvit import *
 from .cspnet import *
 from .densenet import *
