@@ -476,7 +476,7 @@ class AS_MLP(nn.Module):
 #     DEPTHS: [ 2, 2, 18, 2 ]
 #     SHIFT_SIZE: 5
 
-from registry import register_model
+from .registry import register_model
 from ..data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 _cfg = {
