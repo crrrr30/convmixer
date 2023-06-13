@@ -60,6 +60,9 @@ try:
     has_wandb = True
 except ImportError: 
     has_wandb = False
+    
+import warnings
+warnings.filterwarnings('ignore')
 
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
