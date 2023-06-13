@@ -472,7 +472,7 @@ def main():
             model = NativeDDP(model, device_ids=[args.local_rank], broadcast_buffers=not args.no_ddp_bb)
         # NOTE: EMA model does not need to be wrapped by DDP
         
-    model = torch.compile(model)
+    model = torch.compile(model, mode="reduce-overhead")
 
     # setup learning rate schedule and starting epoch
     lr_scheduler, num_epochs = create_scheduler(args, optimizer)
