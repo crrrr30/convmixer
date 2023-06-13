@@ -61,9 +61,10 @@ try:
 except ImportError: 
     has_wandb = False
 
-
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
+torch._dynamo.config.cache_size_limit = 128
+
 
 # The first arg parser parses out only the --config argument, this argument is used to
 # load a yaml file containing key-values that override the defaults for the main parser below
