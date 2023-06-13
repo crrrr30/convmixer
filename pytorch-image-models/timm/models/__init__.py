@@ -6,6 +6,7 @@ from .coat import *
 from .convit import *
 from .convmixer import *
 from .asmlp import *
+from .mymlp import *
 from .crossvit import *
 from .cspnet import *
 from .densenet import *
