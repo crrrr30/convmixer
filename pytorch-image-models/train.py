@@ -61,6 +61,10 @@ try:
 except ImportError: 
     has_wandb = False
 
+
+torch._dynamo.config.log_level = logging.DEBUG
+torch._dynamo.config.verbose = True
+
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
 
