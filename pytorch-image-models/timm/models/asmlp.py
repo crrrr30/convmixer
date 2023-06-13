@@ -11,8 +11,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from .shift_cuda import Shift
-from einops.layers.torch import Rearrange
-
+from einops import rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
 
@@ -209,7 +208,6 @@ class PatchMerging(nn.Module):
         self.dim = dim
         self.reduction = nn.Conv2d(4 * dim, 2 * dim, 1, 1, bias=False)
         self.norm = norm_layer(4 * dim)
-        self.rearrange = Rearrange("b c (h p1) (w p2) -> b (p1 p2 c) h w", p1=2, p2=2)
 
     def forward(self, x):
         """
@@ -226,7 +224,7 @@ class PatchMerging(nn.Module):
         # x2 = x[:, :, 0::2, 1::2]  # B C H/2 W/2 
         # x3 = x[:, :, 1::2, 1::2]  # B C H/2 W/2 
         # x = torch.cat([x0, x1, x2, x3], 1)  # B 4*C H/2 W/2 
-        x = self.rearrange(x)
+        x = rearrange(x, "b c (h p1) (w p2) -> b (p1 p2 c) h w", p1=2, p2=2)
 
         x = self.norm(x)
         x = self.reduction(x)
