@@ -28,9 +28,9 @@ torchrun --nproc_per_node=8 train.py \
     --epochs 300 \
     --warmup-epochs 20 \
     --weight-decay 0.05 \
-    --lr 5e-4 \
-    --warmup-lr 5e-7 \ 
-    --min-lr 5e-6 \
+    --lr 0.0005 \
+    --warmup-lr 0.0000005 \
+    --min-lr 0.000005 \
     --sched cosine \
     --decay-epochs 30 \
     --decay-rate 0.1 \
