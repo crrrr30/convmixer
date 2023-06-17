@@ -177,9 +177,9 @@ parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RA
 # Augmentation & regularization parameters
 parser.add_argument('--no-aug', action='store_true', default=False,
                     help='Disable all training augmentation, override other train aug args')
-parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0], metavar='PCT',
+parser.add_argument('--scale', type=float, nargs='+', default=None, metavar='PCT',
                     help='Random resize scale (default: 0.08 1.0)')
-parser.add_argument('--ratio', type=float, nargs='+', default=[3./4., 4./3.], metavar='RATIO',
+parser.add_argument('--ratio', type=float, nargs='+', default=None, metavar='RATIO',
                     help='Random resize aspect ratio (default: 0.75 1.33)')
 parser.add_argument('--hflip', type=float, default=0.5,
                     help='Horizontal flip training aug probability')
