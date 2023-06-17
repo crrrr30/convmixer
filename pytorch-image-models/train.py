@@ -112,6 +112,8 @@ parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
 parser.add_argument('-b', '--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
+parser.add_argument('-a', '--accumulation-steps', type=int, default=0, metavar='N',
+                    help='accumulation steps; equivalent to scaling the batch size by this amount (default: 0/off)')
 parser.add_argument('-vb', '--validation-batch-size', type=int, default=None, metavar='N',
                     help='validation batch size override (default: None)')
 
