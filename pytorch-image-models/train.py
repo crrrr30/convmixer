@@ -436,7 +436,7 @@ def main():
             _logger.info('Using NVIDIA APEX AMP. Training in mixed precision.')
     elif use_amp == 'native':
         amp_autocast = torch.cuda.amp.autocast
-        loss_scaler = NativeScaler()
+        loss_scaler = NativeScaler(need_update=args.accumulation_steps <= 1)
         if args.local_rank == 0:
             _logger.info('Using native Torch AMP. Training in mixed precision.')
     else:
@@ -676,7 +676,11 @@ def train_one_epoch(
         data_time_m.update(time.time() - end)
 
         if lr_scheduler is not None:
-            lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
+            if args.accumulation_steps > 1 and \
+                ((batch_idx + 1) % args.accumulation_steps == 0 or batch_idx + 1 == len(loader)):
+                lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
+            else:
+                lr_scheduler.step_frac(epoch + (batch_idx + 1) / len(loader))
 
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
@@ -692,20 +696,41 @@ def train_one_epoch(
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
 
-        optimizer.zero_grad()
-        if loss_scaler is not None:
-            loss_scaler(
-                loss, optimizer,
-                clip_grad=args.clip_grad, clip_mode=args.clip_mode,
-                parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
-                create_graph=second_order)
+        # args.accumulation_steps
+        if args.accumulation_steps > 1:
+            loss = loss / args.accumulation_steps
+            if loss_scaler is not None:
+                loss_scaler(
+                    loss, optimizer,
+                    clip_grad=args.clip_grad, clip_mode=args.clip_mode,
+                    parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
+                    create_graph=second_order,
+                    need_update=(batch_idx + 1) % args.accumulation_steps == 0 or batch_idx + 1 == len(loader))
+            else:
+                loss.backward(create_graph=second_order)
+                if args.clip_grad is not None:
+                    dispatch_clip_grad(
+                        model_parameters(model, exclude_head='agc' in args.clip_mode),
+                        value=args.clip_grad, mode=args.clip_mode)
+                if (batch_idx + 1) % args.accumulation_steps == 0 or batch_idx + 1 == len(loader):
+                    optimizer.step()
+            if (batch_idx + 1) % args.accumulation_steps == 0 or batch_idx + 1 == len(loader):
+                optimizer.zero_grad()
         else:
-            loss.backward(create_graph=second_order)
-            if args.clip_grad is not None:
-                dispatch_clip_grad(
-                    model_parameters(model, exclude_head='agc' in args.clip_mode),
-                    value=args.clip_grad, mode=args.clip_mode)
-            optimizer.step()
+            optimizer.zero_grad()
+            if loss_scaler is not None:
+                loss_scaler(
+                    loss, optimizer,
+                    clip_grad=args.clip_grad, clip_mode=args.clip_mode,
+                    parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
+                    create_graph=second_order)
+            else:
+                loss.backward(create_graph=second_order)
+                if args.clip_grad is not None:
+                    dispatch_clip_grad(
+                        model_parameters(model, exclude_head='agc' in args.clip_mode),
+                        value=args.clip_grad, mode=args.clip_mode)
+                optimizer.step()
 
         if model_ema is not None:
             model_ema.update(model)

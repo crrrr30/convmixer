@@ -28,16 +28,16 @@ torchrun --nproc_per_node=8 train.py \
     --epochs 300 \
     --warmup-epochs 20 \
     --weight-decay 0.05 \
-    --lr 0.0005 \
-    --warmup-lr 0.0000005 \
-    --min-lr 0.000005 \
+    --lr 0.001 \
+    --warmup-lr 0.000001 \
+    --min-lr 0.00001 \
     --sched cosine \
     --decay-epochs 30 \
     --decay-rate 0.1 \
     --amp \
     --input-size 3 224 224 \
     --aa rand-m9-mstd0.5-inc1 \
-    --cutmix 0.1 \
+    --cutmix 1.0 \
     --mixup 0.8 \
     --reprob 0.25 \
     --remode pixel \
