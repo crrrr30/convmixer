@@ -42,7 +42,6 @@ torchrun --nproc_per_node=8 train.py \
     --reprob 0.25 \
     --remode pixel \
     --num-classes 1000 \
-    --warmup-epochs 0 \
     --opt-eps=1e-3 \
     --clip-grad 5.0 \
     &> logs.out
