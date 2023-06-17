@@ -3,28 +3,6 @@ torchrun --nproc_per_node=8 train.py \
     -b 128 \
     -j 10 \
     --opt adamw \
-    --epochs 150 \
-    --sched onecycle \
-    --amp \
-    --input-size 3 224 224 \
-    --lr 0.01 \
-    --aa rand-m9-mstd0.5-inc1 \
-    --cutmix 0.5 \
-    --mixup 0.5 \
-    --reprob 0.25 \
-    --remode pixel \
-    --num-classes 1000 \
-    --warmup-epochs 0 \
-    --opt-eps=1e-3 \
-    --clip-grad 1.0 \
-    --resume output/train/20230613-163055-asmlp_base_patch4_shift5_224-224/checkpoint-56.pth.tar \
-    &> logs.out
-
-torchrun --nproc_per_node=8 train.py \
-    --model asmlp_base_patch4_shift5_224 \
-    -b 128 \
-    -j 10 \
-    --opt adamw \
     --epochs 300 \
     --warmup-epochs 20 \
     --weight-decay 0.05 \
@@ -42,7 +20,6 @@ torchrun --nproc_per_node=8 train.py \
     --reprob 0.25 \
     --remode pixel \
     --num-classes 1000 \
-    --opt-eps=1e-3 \
     --clip-grad 5.0 \
     &> logs.out
 
