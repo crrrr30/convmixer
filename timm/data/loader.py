@@ -5,6 +5,7 @@ https://github.com/NVIDIA/apex/commit/d5e2bb4bdeedd27b1dfaf5bb2b24d6c000dee9be#d
 
 Hacked together by / Copyright 2019, Ross Wightman
 """
+import os
 import logging
 import random
 from contextlib import suppress
@@ -15,6 +16,7 @@ from typing import Callable
 import torch
 import torch.utils.data
 import numpy as np
+import datasets.distributed
 
 from .constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from .dataset import IterableImageDataset
@@ -23,11 +25,15 @@ from .random_erasing import RandomErasing
 from .mixup import FastCollateMixup
 from .transforms_factory import create_transform
 
+from torchvision import transforms 
+
 _logger = logging.getLogger(__name__)
 
 
 def fast_collate(batch):
     """ A fast collation function optimized for uint8 images (np array or torch) and int64 targets (labels)"""
+    if isinstance(batch[0], dict):
+        batch = [(b["image"], b["label"]) for b in batch]
     assert isinstance(batch[0], tuple)
     batch_size = len(batch)
     if isinstance(batch[0][0], tuple):
@@ -186,6 +192,40 @@ def _worker_init(worker_id, worker_seeding='all'):
             np.random.seed(worker_info.seed % (2 ** 32 - 1))
 
 
+def build_transform(is_train, args):
+    resize_im = args.input_size > 32
+    if is_train:
+        # this should always dispatch to transforms_imagenet_train
+        transform = create_transform(
+            input_size=args.input_size,
+            is_training=True,
+            color_jitter=args.color_jitter,
+            auto_augment=args.aa,
+            interpolation=args.train_interpolation,
+            re_prob=args.reprob,
+            re_mode=args.remode,
+            re_count=args.recount,
+        )
+        if not resize_im:
+            # replace RandomResizedCropAndInterpolation with
+            # RandomCrop
+            transform.transforms[0] = transforms.RandomCrop(
+                args.input_size, padding=4)
+        return transform
+
+    t = []
+    if resize_im:
+        size = int(args.input_size / args.eval_crop_ratio)
+        t.append(
+            transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
+        )
+        t.append(transforms.CenterCrop(args.input_size))
+
+    t.append(transforms.ToTensor())
+    t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+    return transforms.Compose(t)
+
+
 def create_loader(
         dataset,
         input_size,
@@ -221,34 +261,41 @@ def create_loader(
         use_multi_epochs_loader=False,
         persistent_workers=True,
         worker_seeding='all',
+        args=None,
 ):
     re_num_splits = 0
     if re_split:
         # apply RE to second half of batch if no aug split otherwise line up with aug split
         re_num_splits = num_aug_splits or 2
-    dataset.transform = create_transform(
-        input_size,
-        is_training=is_training,
-        use_prefetcher=use_prefetcher,
-        no_aug=no_aug,
-        scale=scale,
-        ratio=ratio,
-        hflip=hflip,
-        vflip=vflip,
-        color_jitter=color_jitter,
-        auto_augment=auto_augment,
-        interpolation=interpolation,
-        mean=mean,
-        std=std,
-        crop_pct=crop_pct,
-        crop_mode=crop_mode,
-        tf_preprocessing=tf_preprocessing,
-        re_prob=re_prob,
-        re_mode=re_mode,
-        re_count=re_count,
-        re_num_splits=re_num_splits,
-        separate=num_aug_splits > 0,
-    )
+    # augs = create_transform(
+    #     input_size,
+    #     is_training=is_training,
+    #     use_prefetcher=use_prefetcher,
+    #     no_aug=no_aug,
+    #     scale=scale,
+    #     ratio=ratio,
+    #     hflip=hflip,
+    #     vflip=vflip,
+    #     color_jitter=color_jitter,
+    #     auto_augment=auto_augment,
+    #     interpolation=interpolation,
+    #     mean=mean,
+    #     std=std,
+    #     crop_pct=crop_pct,
+    #     crop_mode=crop_mode,
+    #     tf_preprocessing=tf_preprocessing,
+    #     re_prob=re_prob,
+    #     re_mode=re_mode,
+    #     re_count=re_count,
+    #     re_num_splits=re_num_splits,
+    #     separate=num_aug_splits > 0,
+    # )
+    augs = build_transform(is_training, args)
+    def transforms(examples):
+        examples["image"] = [augs(img.convert("RGB")) for img in examples["image"]]
+        return examples
+    dataset.set_transform(transforms)
+    dataset = datasets.distributed.split_dataset_by_node(dataset, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
 
     if isinstance(dataset, IterableImageDataset):
         # give Iterable datasets early knowledge of num_workers so that sample estimates

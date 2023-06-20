@@ -297,6 +297,8 @@ class FastCollateMixup(Mixup):
         return lam
 
     def __call__(self, batch, _=None):
+        if isinstance(batch[0], dict):
+            batch = [(b["image"], b["label"]) for b in batch]
         batch_size = len(batch)
         assert batch_size % 2 == 0, 'Batch size should be even when using this'
         half = 'half' in self.mode

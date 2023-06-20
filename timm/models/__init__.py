@@ -33,6 +33,7 @@ from .mlp_mixer import *
 from .mobilenetv3 import *
 from .mobilevit import *
 from .mvitv2 import *
+from .mymlp import *
 from .nasnet import *
 from .nest import *
 from .nfnet import *

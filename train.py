@@ -38,6 +38,8 @@ from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 from timm.utils import ApexScaler, NativeScaler
 
+from datasets import Dataset, concatenate_datasets
+
 try:
     from apex import amp
     from apex.parallel import DistributedDataParallel as ApexDDP
@@ -82,20 +84,20 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 # Dataset parameters
 group = parser.add_argument_group('Dataset parameters')
 # Keep this argument outside the dataset group because it is positional.
-parser.add_argument('data', nargs='?', metavar='DIR', const=None,
-                    help='path to dataset (positional is *deprecated*, use --data-dir)')
-parser.add_argument('--data-dir', metavar='DIR',
-                    help='path to dataset (root dir)')
-parser.add_argument('--dataset', metavar='NAME', default='',
-                    help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
-group.add_argument('--train-split', metavar='NAME', default='train',
-                   help='dataset train split (default: train)')
-group.add_argument('--val-split', metavar='NAME', default='validation',
-                   help='dataset validation split (default: validation)')
-group.add_argument('--dataset-download', action='store_true', default=False,
-                   help='Allow download of dataset for torch/ and tfds/ datasets that support it.')
-group.add_argument('--class-map', default='', type=str, metavar='FILENAME',
-                   help='path to class to idx mapping file (default: "")')
+# parser.add_argument('data', nargs='?', metavar='DIR', const=None,
+#                     help='path to dataset (positional is *deprecated*, use --data-dir)')
+# parser.add_argument('--data-dir', metavar='DIR',
+#                     help='path to dataset (root dir)')
+# parser.add_argument('--dataset', metavar='NAME', default='',
+#                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
+# group.add_argument('--train-split', metavar='NAME', default='train',
+#                    help='dataset train split (default: train)')
+# group.add_argument('--val-split', metavar='NAME', default='validation',
+#                    help='dataset validation split (default: validation)')
+# group.add_argument('--dataset-download', action='store_true', default=False,
+#                    help='Allow download of dataset for torch/ and tfds/ datasets that support it.')
+# group.add_argument('--class-map', default='', type=str, metavar='FILENAME',
+                #    help='path to class to idx mapping file (default: "")')
 
 # Model parameters
 group = parser.add_argument_group('Model parameters')
@@ -576,29 +578,8 @@ def main():
         model = torch.compile(model, backend=args.torchcompile)
 
     # create the train and eval datasets
-    if args.data and not args.data_dir:
-        args.data_dir = args.data
-    dataset_train = create_dataset(
-        args.dataset,
-        root=args.data_dir,
-        split=args.train_split,
-        is_training=True,
-        class_map=args.class_map,
-        download=args.dataset_download,
-        batch_size=args.batch_size,
-        seed=args.seed,
-        repeats=args.epoch_repeats,
-    )
-
-    dataset_eval = create_dataset(
-        args.dataset,
-        root=args.data_dir,
-        split=args.val_split,
-        is_training=False,
-        class_map=args.class_map,
-        download=args.dataset_download,
-        batch_size=args.batch_size,
-    )
+    dataset_train = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-train-{i:05d}-of-00257.arrow") for i in range(257)])
+    dataset_eval = concatenate_datasets([Dataset.from_file(f"../../imagenet-1k/imagenet-1k-validation-{i:05d}-of-00013.arrow",) for i in range(13)])
 
     # setup mixup / cutmix
     collate_fn = None
@@ -658,6 +639,7 @@ def main():
         device=device,
         use_multi_epochs_loader=args.use_multi_epochs_loader,
         worker_seeding=args.worker_seeding,
+        args=args,
     )
 
     eval_workers = args.workers
@@ -678,6 +660,7 @@ def main():
         crop_pct=data_config['crop_pct'],
         pin_memory=args.pin_mem,
         device=device,
+        args=args
     )
 
     # setup loss function
