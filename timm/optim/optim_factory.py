@@ -257,6 +257,14 @@ def create_optimizer_v2(
             has_apex = True
         except ImportError:
             has_apex = False
+        try:
+            from apex.optimizers.fused_novograd import FusedNovoGrad
+            from apex.optimizers.fused_adam import FusedAdam
+            from apex.optimizers.fused_lamb import FusedLAMB
+            from apex.optimizers.fused_sgd import FusedSGD
+            has_apex = True
+        except ImportError:
+            has_apex = False
         assert has_apex and torch.cuda.is_available(), 'APEX and CUDA required for fused optimizers'
 
     if opt_lower.startswith('bnb'):

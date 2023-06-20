@@ -561,7 +561,7 @@ def mymlp_base_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=128, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.1, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
@@ -572,7 +572,7 @@ def mymlp_small_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.1, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
@@ -583,7 +583,7 @@ def mymlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 6, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.1, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
