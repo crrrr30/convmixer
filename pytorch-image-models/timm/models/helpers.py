@@ -73,6 +73,7 @@ def resume_checkpoint(model, checkpoint_path, optimizer=None, loss_scaler=None, 
             new_state_dict = OrderedDict()
             for k, v in checkpoint['state_dict'].items():
                 name = k[7:] if k.startswith('module') else k
+                name = k[10:] if k.startswith('_orig_mod') else k
                 new_state_dict[name] = v
             model.load_state_dict(new_state_dict)
 
