@@ -193,7 +193,7 @@ def _worker_init(worker_id, worker_seeding='all'):
 
 
 def build_transform(is_train, args):
-    resize_im = args.input_size > 32
+    resize_im = args.input_size[1] > 32
     if is_train:
         # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
