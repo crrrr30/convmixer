@@ -291,9 +291,9 @@ class FastCollateMixup(Mixup):
                     mixed = mixed.copy()  # don't want to modify the original while iterating
                     mixed[:, yl:yh, xl:xh] = batch[j][0][:, yl:yh, xl:xh]
                 else:
-                    mixed = mixed.float() * lam + batch[j][0].float() * (1 - lam)
-                    torch.round(mixed, out=mixed)
-            output[i] += torch.tensor(mixed, dtype=torch.uint8)
+                    mixed = mixed.astype(np.float32) * lam + batch[j][0].astype(np.float32) * (1 - lam)
+                    np.rint(mixed, out=mixed)
+            output[i] += torch.from_numpy(mixed.astype(np.uint8))
         return lam
 
     def __call__(self, batch, _=None):
