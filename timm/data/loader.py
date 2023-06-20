@@ -215,7 +215,7 @@ def build_transform(is_train, args):
 
     t = []
     if resize_im:
-        size = int(args.input_size / args.eval_crop_ratio)
+        size = int(args.input_size / args.crop_pct)
         t.append(
             transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
         )
