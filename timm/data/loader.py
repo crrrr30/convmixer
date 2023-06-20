@@ -219,7 +219,7 @@ def build_transform(is_train, args):
         t.append(
             transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
         )
-        t.append(transforms.CenterCrop(args.input_size))
+        t.append(transforms.CenterCrop(args.input_size[1]))
 
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
