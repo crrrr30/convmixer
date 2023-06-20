@@ -210,7 +210,7 @@ def build_transform(is_train, args):
             # replace RandomResizedCropAndInterpolation with
             # RandomCrop
             transform.transforms[0] = transforms.RandomCrop(
-                args.input_size, padding=4)
+                args.input_size[1], padding=4)
         return transform
 
     t = []
