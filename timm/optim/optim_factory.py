@@ -258,10 +258,10 @@ def create_optimizer_v2(
         except ImportError:
             has_apex = False
         try:
-            from apex.optimizers.fused_novograd import FusedNovoGrad
-            from apex.optimizers.fused_adam import FusedAdam
-            from apex.optimizers.fused_lamb import FusedLAMB
-            from apex.optimizers.fused_sgd import FusedSGD
+            from apex.optimizers import FusedNovoGrad
+            from apex.optimizers import FusedAdam
+            from apex.optimizers import FusedLAMB
+            from apex.optimizers import FusedSGD
             has_apex = True
         except ImportError:
             has_apex = False
