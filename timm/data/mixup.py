@@ -292,7 +292,7 @@ class FastCollateMixup(Mixup):
                     mixed[:, yl:yh, xl:xh] = batch[j][0][:, yl:yh, xl:xh]
                 else:
                     mixed = mixed.float() * lam + batch[j][0].float() * (1 - lam)
-                    np.rint(mixed, out=mixed)
+                    torch.round(mixed, out=mixed)
             output[i] += torch.tensor(mixed, dtype=torch.uint8)
         return lam
 
