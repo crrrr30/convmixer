@@ -456,9 +456,9 @@ def main():
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=args.local_rank == 0)
 
-    if args.finetine:
-        if os.path.isfile(args.finetine):
-            checkpoint = torch.load(args.finetine, map_location='cpu')
+    if args.finetune:
+        if os.path.isfile(args.finetune):
+            checkpoint = torch.load(args.finetune, map_location='cpu')
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 if args.local_rank == 0:
                     _logger.info('Restoring model state from checkpoint...')
@@ -470,7 +470,7 @@ def main():
                 model.load_state_dict(new_state_dict)
 
                 if args.local_rank == 0:
-                    _logger.info("Loaded pretrained checkpoint '{}' ({} epochs pretrained)".format(args.finetine, checkpoint['epoch']))
+                    _logger.info("Loaded pretrained checkpoint '{}' ({} epochs pretrained)".format(args.finetune, checkpoint['epoch']))
             else:
                 model.load_state_dict(checkpoint)
                 if args.local_rank == 0:
