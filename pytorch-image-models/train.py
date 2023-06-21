@@ -454,6 +454,31 @@ def main():
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=args.local_rank == 0)
 
+    if args.finetine:
+        if os.path.isfile(args.finetine):
+            checkpoint = torch.load(args.finetine, map_location='cpu')
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                if args.local_rank == 0:
+                    _logger.info('Restoring model state from checkpoint...')
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    name = k[7:] if k.startswith('module') else k
+                    name = k[10:] if k.startswith('_orig_mod') else k
+                    new_state_dict[name] = v
+                model.load_state_dict(new_state_dict)
+
+                if args.local_rank == 0:
+                    _logger.info("Loaded pretrained checkpoint '{}' ({} epochs pretrained)".format(args.finetine, checkpoint['epoch']))
+            else:
+                model.load_state_dict(checkpoint)
+                if args.local_rank == 0:
+                    _logger.info("Loaded pretrained checkpoint '{}'".format(args.finetune))
+            return resume_epoch
+        else:
+            _logger.error("No checkpoint found at '{}'".format(args.finetune))
+            raise FileNotFoundError()
+        
+
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
     if args.model_ema:
