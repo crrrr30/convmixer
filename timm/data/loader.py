@@ -295,7 +295,7 @@ def create_loader(
         examples["image"] = [augs(img.convert("RGB")) for img in examples["image"]]
         return examples
     dataset.set_transform(transforms)
-    dataset = datasets.distributed.split_dataset_by_node(dataset, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
+    # dataset = datasets.distributed.split_dataset_by_node(dataset, rank=int(os.environ["RANK"]), world_size=int(os.environ["WORLD_SIZE"]))
 
     if isinstance(dataset, IterableImageDataset):
         # give Iterable datasets early knowledge of num_workers so that sample estimates
