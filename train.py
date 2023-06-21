@@ -109,6 +109,8 @@ group.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH',
                    help='Initialize model from this checkpoint (default: none)')
 group.add_argument('--resume', default='', type=str, metavar='PATH',
                    help='Resume full model and optimizer state from checkpoint (default: none)')
+group.add_argument('--finetune', default='', type=str, metavar='PATH',
+                    help='Finetune a pretrained model from checkpoint (default: none)')
 group.add_argument('--no-resume-opt', action='store_true', default=False,
                    help='prevent resume of optimizer state when resuming model')
 group.add_argument('--num-classes', type=int, default=None, metavar='N',
@@ -549,6 +551,30 @@ def main():
             loss_scaler=None if args.no_resume_opt else loss_scaler,
             log_info=utils.is_primary(args),
         )
+    
+    if args.finetune:
+        if os.path.isfile(args.finetune):
+            checkpoint = torch.load(args.finetune, map_location='cpu')
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                if args.local_rank == 0:
+                    _logger.info('Restoring model state from checkpoint...')
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    name = k[7:] if k.startswith('module') else k
+                    name = k[10:] if k.startswith('_orig_mod') else k
+                    new_state_dict[name] = v
+                model.load_state_dict(new_state_dict)
+
+                if args.local_rank == 0:
+                    _logger.info("Loaded pretrained checkpoint '{}' ({} epochs pretrained)".format(args.finetune, checkpoint['epoch']))
+            else:
+                model.load_state_dict(checkpoint)
+                if args.local_rank == 0:
+                    _logger.info("Loaded pretrained checkpoint '{}'".format(args.finetune))
+        else:
+            _logger.error("No checkpoint found at '{}'".format(args.finetune))
+            raise FileNotFoundError()
+        
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None

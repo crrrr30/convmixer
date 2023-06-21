@@ -1,21 +1,19 @@
 # --------------------------------------------------------
-# My-MLP
+# AS-MLP
 # Licensed under The MIT License [see LICENSE for details]
+# Written by Zehao Yu and Dongze Lian (AS-MLP)
 # --------------------------------------------------------
 
-import math
+
 import torch
 import torch.nn as nn
-import torch.nn.init as init
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from torchvision.ops.deform_conv import deform_conv2d
-
+from .shift_cuda import Shift
 from einops import rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
-
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -36,82 +34,7 @@ class Mlp(nn.Module):
         return x
 
 
-class CycleFC(nn.Module):
-    """
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        groups: int = 1,
-        bias: bool = True,
-    ):
-        super(CycleFC, self).__init__()
-
-        assert groups == 1
-        if in_channels % groups != 0:
-            raise ValueError('in_channels must be divisible by groups')
-        if out_channels % groups != 0:
-            raise ValueError('out_channels must be divisible by groups')
-        if in_channels % kernel_size**2 != 0:
-            assert in_channels % 8 == 0
-            d_prime = {3: in_channels * 9 // 8, 5: in_channels * 25 // 16, 7: in_channels * 49 // 64}[kernel_size]
-            self.channel_mixer = nn.Conv2d(in_channels, d_prime, 1, 1, 0)
-            in_channels = d_prime
-            assert in_channels % kernel_size**2 == 0
-        else:
-            self.channel_mixer = None
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.groups = groups
-
-        self.weight = nn.Parameter(torch.empty(out_channels, in_channels // groups, 1, 1))  # kernel size == 1
-
-        if bias:
-            self.bias = nn.Parameter(torch.empty(out_channels))
-        else:
-            self.register_parameter('bias', None)
-        self.register_buffer('offset', self.gen_offset())
-
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-
-        if self.bias is not None:
-            fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
-            bound = 1 / math.sqrt(fan_in)
-            init.uniform_(self.bias, -bound, bound)
-
-    def gen_offset(self):
-        """
-        offset (Tensor[batch_size, 2 * offset_groups * kernel_height * kernel_width,
-            out_height, out_width]): offsets to be applied for each position in the
-            convolution kernel.
-        """
-        # offset shape: (1, self.in_channels*2, 1, 1)
-        
-        k = self.kernel_size
-        # Note: Unary - takes precedence over binary //
-        return torch.Tensor([[i, j] for j in range(-(k//2), k//2+1) for i in range(-(k//2),k//2+1)] \
-            * (self.in_channels // k**2)).view(1, -1, 1, 1)
-
-    def forward(self, input):
-        """
-        Args:
-            input (Tensor[batch_size, in_channels, in_height, in_width]): input tensor
-        """
-        if self.channel_mixer:
-            input = self.channel_mixer(input)
-        B, C, H, W = input.size()
-        return deform_conv2d(input, self.offset.expand(B, -1, H, W), self.weight, self.bias, stride=1,
-                                padding=0, dilation=1)
-
-class MyMLPLayer(nn.Module):
+class AxialShift(nn.Module):
     r""" Axial shift  
 
     Args:
@@ -128,13 +51,17 @@ class MyMLPLayer(nn.Module):
         self.shift_size = shift_size
         self.pad = shift_size // 2
         self.conv1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        self.myfc = CycleFC(in_channels=dim, out_channels=dim, kernel_size=shift_size)
+        self.conv2_1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
+        self.conv2_2 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
         self.conv3 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
 
         self.actn = nn.GELU()
 
         self.norm1 = MyNorm(dim)
         self.norm2 = MyNorm(dim)
+
+        self.shift_dim2 = Shift(self.shift_size, 2)                                                   
+        self.shift_dim3 = Shift(self.shift_size, 3)
 
     def forward(self, x):
         """
@@ -164,8 +91,16 @@ class MyMLPLayer(nn.Module):
         x_shift_td = shift(2)
         '''
         
-        x = self.myfc(x)
-        x = self.actn(x)
+        x_shift_lr = self.shift_dim3(x)
+        x_shift_td = self.shift_dim2(x)
+        
+        x_lr = self.conv2_1(x_shift_lr)
+        x_td = self.conv2_2(x_shift_td)
+
+        x_lr = self.actn(x_lr)
+        x_td = self.actn(x_td)
+
+        x = x_lr + x_td
         x = self.norm2(x)
 
         x = self.conv3(x)
@@ -193,7 +128,7 @@ class MyMLPLayer(nn.Module):
         return flops
 
 
-class MyBlock(nn.Module):
+class AxialShiftedBlock(nn.Module):
     r""" Swin Transformer Block.
 
     Args:
@@ -218,7 +153,7 @@ class MyBlock(nn.Module):
         self.mlp_ratio = mlp_ratio
 
         self.norm1 = norm_layer(dim)
-        self.axial_shift = MyMLPLayer(dim, shift_size=shift_size, as_bias=as_bias, proj_drop=drop)
+        self.axial_shift = AxialShift(dim, shift_size=shift_size, as_bias=as_bias, proj_drop=drop)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -338,7 +273,7 @@ class BasicLayer(nn.Module):
 
         # build blocks
         self.blocks = nn.ModuleList([
-            MyBlock(dim=dim, input_resolution=input_resolution,
+            AxialShiftedBlock(dim=dim, input_resolution=input_resolution,
                               shift_size=shift_size,
                               mlp_ratio=mlp_ratio,
                               as_bias=as_bias,
@@ -427,7 +362,7 @@ def MyNorm(dim):
     return nn.GroupNorm(1, dim)
 
 
-class My_MLP(nn.Module):
+class AS_MLP(nn.Module):
     r""" AS-MLP
         A PyTorch impl of : `AS-MLP: An Axial Shifted MLP Architecture for Vision`  -
           https://arxiv.org/pdf/xxx.xxx
@@ -557,33 +492,33 @@ _cfg = {
 
 
 @register_model
-def mymlp_base_patch4_shift5_224(pretrained=False, **kwargs):
-    model = My_MLP(
+def asmlp_base_patch4_shift5_224(pretrained=False, **kwargs):
+    model = AS_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=128, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.5, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
 
 
 @register_model
-def mymlp_small_patch4_shift5_224(pretrained=False, **kwargs):
-    model = My_MLP(
+def asmlp_small_patch4_shift5_224(pretrained=False, **kwargs):
+    model = AS_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.3, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
 
 
 @register_model
-def mymlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
-    model = My_MLP(
+def asmlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
+    model = AS_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 6, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.2, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
