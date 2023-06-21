@@ -92,6 +92,8 @@ parser.add_argument('--initial-checkpoint', default='', type=str, metavar='PATH'
                     help='Initialize model from this checkpoint (default: none)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='Resume full model and optimizer state from checkpoint (default: none)')
+parser.add_argument('--finetune', default='', type=str, metavar='PATH',
+                    help='Finetune a pretrained model from checkpoint (default: none)')
 parser.add_argument('--no-resume-opt', action='store_true', default=False,
                     help='prevent resume of optimizer state when resuming model')
 parser.add_argument('--num-classes', type=int, default=None, metavar='N',
