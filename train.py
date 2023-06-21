@@ -669,9 +669,9 @@ def main():
     )
 
     eval_workers = args.workers
-    if args.distributed and ('tfds' in args.dataset or 'wds' in args.dataset):
-        # FIXME reduces validation padding issues when using TFDS, WDS w/ workers and distributed training
-        eval_workers = min(2, args.workers)
+    # if args.distributed and ('tfds' in args.dataset or 'wds' in args.dataset):
+    #     # FIXME reduces validation padding issues when using TFDS, WDS w/ workers and distributed training
+    #     eval_workers = min(2, args.workers)
     loader_eval = create_loader(
         dataset_eval,
         input_size=data_config['input_size'],
