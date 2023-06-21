@@ -1,3 +1,4 @@
+from .asmlp import *
 from .beit import *
 from .byoanet import *
 from .byobnet import *
