@@ -475,7 +475,6 @@ def main():
                 model.load_state_dict(checkpoint)
                 if args.local_rank == 0:
                     _logger.info("Loaded pretrained checkpoint '{}'".format(args.finetune))
-            return resume_epoch
         else:
             _logger.error("No checkpoint found at '{}'".format(args.finetune))
             raise FileNotFoundError()
