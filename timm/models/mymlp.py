@@ -247,7 +247,12 @@ class MyNet(nn.Module):
     def __init__(self, layers, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dims=None, transitions=None, segment_dim=None, mlp_ratios=None, skip_lam=1.0,
         qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-        norm_layer=nn.LayerNorm, mlp_fn=MyMLP, fork_feat=False):
+        norm_layer=nn.LayerNorm, mlp_fn=MyMLP, fork_feat=False, **kwargs):
+        
+        if kwargs and "RANK" in os.environ and os.environ["RANK"] == "0":
+            print("Omitted net args:\n", kwargs)
+        elif kwargs:
+            print("Omitted net args:\n", kwargs)
 
         super().__init__()
         if not fork_feat:
