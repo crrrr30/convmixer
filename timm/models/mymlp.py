@@ -33,14 +33,14 @@ Stream = namedtuple('Stream', ['ptr'])
 
 
 def Dtype(t):
-    # if isinstance(t, torch.cuda.FloatTensor):
-    return 'float'
-    # elif isinstance(t, torch.cuda.DoubleTensor):
-    #     return 'double'
+    if isinstance(t, torch.cuda.FloatTensor):
+        return 'float'
+    elif isinstance(t, torch.cuda.DoubleTensor):
+        return 'double'
 
 
 @cupy._util.memoize(for_each_device=True)
-def load_kernel(kernel_name, code, **kwargs):
+def load_my_kernel(kernel_name, code, **kwargs):
     code = Template(code).substitute(**kwargs)
     return cupy.RawKernel(code, kernel_name)
     kernel_code = cupy.cuda.compile_with_cache(code)
@@ -61,9 +61,9 @@ def GET_BLOCKS(N):
     return (N + CUDA_NUM_THREADS - 1) // CUDA_NUM_THREADS
 
 
-_shift_kernel = kernel_loop + '''
+_my_shift_kernel = kernel_loop + '''
 extern "C"
-__global__ void shift_forward_kernel(
+__global__ void my_shift_forward_kernel(
 const ${Dtype}* bottom_data, ${Dtype}* top_data) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -88,9 +88,9 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
 '''
 
 
-_shift_kernel_backward_grad_input = kernel_loop + '''
+_my_shift_kernel_backward_grad_input = kernel_loop + '''
 extern "C"
-__global__ void shift_backward_grad_input_kernel(
+__global__ void my_shift_backward_grad_input_kernel(
     const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -125,7 +125,7 @@ class _shift(Function):
         n = output.numel()
 
         with torch.cuda.device_of(input):
-            f = load_kernel('shift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
+            f = load_my_kernel('my_shift_forward_kernel', _my_shift_kernel, Dtype=Dtype(input), nthreads=n,
                 num=batch_size, channels=channels, 
                 height=height, width=width,
                 shift=shift, group=int(math.ceil(channels/shift))
@@ -164,8 +164,8 @@ class _shift(Function):
                 n = grad_input.numel()
                 opt['nthreads'] = n
 
-                f = load_kernel('shift_backward_grad_input_kernel',
-                                _shift_kernel_backward_grad_input, **opt)
+                f = load_my_kernel('my_shift_backward_grad_input_kernel',
+                                _my_shift_kernel_backward_grad_input, **opt)
                 f(block=(CUDA_NUM_THREADS,1,1),
                   grid=(GET_BLOCKS(n),1,1),
                   args=[grad_output.data_ptr(), grad_input.data_ptr()],
