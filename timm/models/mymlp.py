@@ -33,6 +33,7 @@ Stream = namedtuple('Stream', ['ptr'])
 
 
 def Dtype(t):
+    return 'float'
     if isinstance(t, torch.cuda.FloatTensor):
         return 'float'
     elif isinstance(t, torch.cuda.DoubleTensor):
