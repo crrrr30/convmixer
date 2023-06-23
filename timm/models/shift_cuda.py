@@ -16,6 +16,8 @@ Stream = namedtuple('Stream', ['ptr'])
 def Dtype(t):
     if isinstance(t, torch.cuda.FloatTensor):
         return 'float'
+    if isinstance(t, torch.Tensor) and t.dtype == torch.float16:
+        return 'half'
     elif isinstance(t, torch.cuda.DoubleTensor):
         return 'double'
 

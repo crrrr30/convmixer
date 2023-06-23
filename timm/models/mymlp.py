@@ -1,34 +1,204 @@
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.models.layers import DropPath, trunc_normal_
-from timm.models.registry import register_model
-from timm.models.layers import to_2tuple
+# --------------------------------------------------------
+# My-MLP
+# Licensed under The MIT License [see LICENSE for details]
+# --------------------------------------------------------
 
 import math
-from torch import Tensor
-from torch.nn import init
+import torch
+import torch.nn as nn
+import torch.nn.init as init
+import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from torchvision.ops.deform_conv import deform_conv2d
+
+from einops import rearrange
+from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
+allow_ops_in_compiled_graph()
+
+
+# the code is modified from https://github.com/d-li14/involution/blob/main/cls/mmcls/models/utils/involution_cuda.py
+from torch.autograd import Function
+import torch
 from torch.nn.modules.utils import _pair
-from torchvision.ops.deform_conv import deform_conv2d as deform_conv2d_tv
+import torch.nn.functional as F
+import torch.nn as nn
+
+from collections import namedtuple
+import cupy
+from string import Template
+import math
+
+Stream = namedtuple('Stream', ['ptr'])
 
 
-def _cfg(url='', **kwargs):
-    return {
-        'url': url,
-        'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': None,
-        'crop_pct': .96, 'interpolation': 'bicubic',
-        'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD, 'classifier': 'head',
-        **kwargs
+def Dtype(t):
+    return 'float'
+    if isinstance(t, torch.cuda.FloatTensor):
+        return 'float'
+    elif isinstance(t, torch.cuda.DoubleTensor):
+        return 'double'
+
+
+@cupy._util.memoize(for_each_device=True)
+def load_my_kernel(kernel_name, code, **kwargs):
+    code = Template(code).substitute(**kwargs)
+    # return cupy.RawKernel(code, kernel_name)
+    kernel_code = cupy.cuda.compile_with_cache(code)
+    return kernel_code.get_function(kernel_name)
+
+
+CUDA_NUM_THREADS = 1024
+
+kernel_loop = '''
+#define CUDA_KERNEL_LOOP(i, n)                        \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+      i < (n);                                       \
+      i += blockDim.x * gridDim.x)
+'''
+
+
+def GET_BLOCKS(N):
+    return (N + CUDA_NUM_THREADS - 1) // CUDA_NUM_THREADS
+
+
+_my_shift_kernel = kernel_loop + '''
+extern "C"
+__global__ void my_shift_forward_kernel(
+const ${Dtype}* bottom_data, ${Dtype}* top_data) {
+  CUDA_KERNEL_LOOP(index, ${nthreads}) {
+    const int n = index / ${channels} / ${height} / ${width};
+    const int c = (index / ${height} / ${width}) % ${channels};
+    const int h = (index / ${width}) % ${height};
+    const int w = index % ${width};
+
+    ${Dtype} value = 0;
+    const int s1 = c % ${shift} - ${shift} / 2;
+    const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
+    const int h_prime = h + s1;
+    const int w_prime = w + s2;
+
+    if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
+        const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
+        value = bottom_data[offset];
     }
 
-default_cfgs = {
-    'my_S': _cfg(crop_pct=0.9),
-    'my_M': _cfg(crop_pct=0.9),
-    'my_L': _cfg(crop_pct=0.875),
+    top_data[index] = value;
+  }
 }
+'''
+
+
+_my_shift_kernel_backward_grad_input = kernel_loop + '''
+extern "C"
+__global__ void my_shift_backward_grad_input_kernel(
+    const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
+  CUDA_KERNEL_LOOP(index, ${nthreads}) {
+    const int n = index / ${channels} / ${height} / ${width};
+    const int c = (index / ${height} / ${width}) % ${channels};
+    const int h = (index / ${width}) % ${height};
+    const int w = index % ${width};
+    
+    ${Dtype} value = 0;
+    const int s1 = c % ${shift} - ${shift} / 2;
+    const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
+    const int h_prime = h + s1;
+    const int w_prime = w + s2;
+
+    if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
+        const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
+        value = top_diff[offset];
+    }
+    
+    bottom_diff[index] = value;
+  }
+}
+'''
+
+
+class _shift(Function):
+    @staticmethod
+    def forward(ctx, input, shift):
+        assert input.dim() == 4 and input.is_cuda
+        batch_size, channels, height, width = input.size()
+
+        output = input.new(batch_size, channels, height, width)
+        n = output.numel()
+
+        with torch.cuda.device_of(input):
+            f = load_my_kernel('my_shift_forward_kernel', _my_shift_kernel, Dtype=Dtype(input), nthreads=n,
+                num=batch_size, channels=channels, 
+                height=height, width=width,
+                shift=shift, group=int(math.ceil(channels/shift))
+            )
+
+            f(block=(CUDA_NUM_THREADS,1,1),
+              grid=(GET_BLOCKS(n),1,1),
+              args=[input.data_ptr(), output.data_ptr()],
+              stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
+
+        ctx.save_for_backward(input)
+        ctx.shift = shift
+        return output
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        assert grad_output.is_cuda
+        if not grad_output.is_contiguous():
+            grad_output = grad_output.contiguous()
+        input = ctx.saved_tensors[0]
+        shift = ctx.shift
+        batch_size, channels, height, width = input.size()
+
+        grad_input = None
+
+        opt = dict(Dtype=Dtype(grad_output),
+            num=batch_size, channels=channels,
+            height=height, width=width,
+            shift=shift, group=int(math.ceil(channels/shift))
+        )
+
+        with torch.cuda.device_of(input):
+            if ctx.needs_input_grad[0]:
+                grad_input = input.new(input.size())
+
+                n = grad_input.numel()
+                opt['nthreads'] = n
+
+                f = load_my_kernel('my_shift_backward_grad_input_kernel',
+                                _my_shift_kernel_backward_grad_input, **opt)
+                f(block=(CUDA_NUM_THREADS,1,1),
+                  grid=(GET_BLOCKS(n),1,1),
+                  args=[grad_output.data_ptr(), grad_input.data_ptr()],
+                  stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
+
+        return grad_input, None, None
+ 
+
+def _shift_cuda(input, shift):
+    """ shift kernel
+    """
+    assert shift >= 3 and shift % 2 == 1
+
+    if input.is_cuda:
+        out = _shift.apply(input, shift)
+    else:
+        raise NotImplementedError
+    return out
+
+
+class Shift(nn.Module):
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.kernel_size = kernel_size
+        assert kernel_size % 2 == 1
+
+    def forward(self, x):
+        if self.kernel_size == 1:
+            return x
+
+        out = _shift_cuda(x, self.kernel_size)
+        return out
 
 
 class Mlp(nn.Module):
@@ -36,9 +206,9 @@ class Mlp(nn.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.fc1 = nn.Conv2d(in_features, hidden_features, 1, 1)
         self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.fc2 = nn.Conv2d(hidden_features, out_features, 1, 1)
         self.drop = nn.Dropout(drop)
 
     def forward(self, x):
@@ -50,7 +220,7 @@ class Mlp(nn.Module):
         return x
 
 
-class MyFC(nn.Module):
+class CycleFC(nn.Module):
     """
     """
 
@@ -58,239 +228,428 @@ class MyFC(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size,  # re-defined kernel_size, represent the spatial area of staircase FC
-        stride: int = 1,
-        padding: int = 0,
-        dilation: int = 1,
+        kernel_size: int,
         groups: int = 1,
-        conjugate: bool = False,
         bias: bool = True,
     ):
-        super(MyFC, self).__init__()
+        super(CycleFC, self).__init__()
 
+        assert groups == 1
         if in_channels % groups != 0:
             raise ValueError('in_channels must be divisible by groups')
         if out_channels % groups != 0:
             raise ValueError('out_channels must be divisible by groups')
-        if stride != 1:
-            raise ValueError('stride must be 1')
-        if padding != 0:
-            raise ValueError('padding must be 0')
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = _pair(stride)
-        self.padding = _pair(padding)
-        self.dilation = _pair(dilation)
-        self.groups = groups
-        self.conjugate = conjugate
-
-        self.weight = nn.Parameter(torch.empty(out_channels, in_channels // groups, 1, 1))  # kernel size == 1
-
-        if bias:
-            self.bias = nn.Parameter(torch.empty(out_channels))
+        if in_channels % kernel_size**2 != 0:
+            assert in_channels % 8 == 0
+            d_prime = {3: in_channels * 9 // 8, 5: in_channels * 25 // 16, 7: in_channels * 49 // 64}[kernel_size]
+            self.channel_mixer = nn.Conv2d(in_channels, d_prime, 1, 1, 0)
+            in_channels = d_prime
+            assert in_channels % kernel_size**2 == 0
         else:
-            self.register_parameter('bias', None)
-        self.register_buffer('offset', self.gen_offset())
+            self.channel_mixer = None
 
-        self.reset_parameters()
+        self.shift = Shift(kernel_size)
+        self.linear = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
 
-    def reset_parameters(self) -> None:
-        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-
-        if self.bias is not None:
-            fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
-            bound = 1 / math.sqrt(fan_in)
-            init.uniform_(self.bias, -bound, bound)
-
-    def gen_offset(self):
-        """
-        offset (Tensor[batch_size, 2 * offset_groups * kernel_height * kernel_width,
-            out_height, out_width]): offsets to be applied for each position in the
-            convolution kernel.
-        """
-        # offset shape: (1, self.in_channels*2, 1, 1)
-        
-        k = self.kernel_size
-        # Note: Unary - takes precedence over binary //
-        if self.conjugate:
-            return torch.Tensor([[i, j] for j in range(-(k//2), k//2+1) for i in range(-(k//2),k//2+1)][::-1] \
-                * math.ceil(self.in_channels / k**2)).view(1, -1, 1, 1)[:, :2 * self.in_channels]
-        return torch.Tensor([[i, j] for j in range(-(k//2), k//2+1) for i in range(-(k//2),k//2+1)] \
-            * math.ceil(self.in_channels / k**2)).view(1, -1, 1, 1)[:, :2 * self.in_channels]
-
-    def forward(self, input: Tensor) -> Tensor:
+    def forward(self, input):
         """
         Args:
             input (Tensor[batch_size, in_channels, in_height, in_width]): input tensor
         """
-        B, C, H, W = input.size()
-        return deform_conv2d_tv(input, self.offset.expand(B, -1, H, W), self.weight, self.bias, stride=self.stride,
-                                padding=self.padding, dilation=self.dilation)
+        if self.channel_mixer:
+            input = self.channel_mixer(input)
+        return self.linear(self.shift(input))
 
-    def extra_repr(self) -> str:
-        s = self.__class__.__name__ + '('
-        s += '{in_channels}'
-        s += ', {out_channels}'
-        s += ', kernel_size={kernel_size}'
-        s += ', stride={stride}'
-        s += ', padding={padding}' if self.padding != (0, 0) else ''
-        s += ', dilation={dilation}' if self.dilation != (1, 1) else ''
-        s += ', groups={groups}' if self.groups != 1 else ''
-        s += ', bias=False' if self.bias is None else ''
-        s += ')'
-        return s.format(**self.__dict__)
+class MyMLPLayer(nn.Module):
+    r""" Axial shift  
 
+    Args:
+        dim (int): Number of input channels.
+        shift_size (int): shift size .
+        as_bias (bool, optional):  If True, add a learnable bias to as mlp. Default: True
+        proj_drop (float, optional): Dropout ratio of output. Default: 0.0
+    """
 
-class MyMLP(nn.Module):
-    def __init__(self, dim, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, shift_size, as_bias=True, proj_drop=0.):
+
         super().__init__()
-        self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
+        self.dim = dim
+        self.shift_size = shift_size
+        self.pad = shift_size // 2
+        self.conv1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
+        self.myfc = CycleFC(in_channels=dim, out_channels=dim, kernel_size=shift_size)
+        self.conv3 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
 
-        self.sfc1 = MyFC(dim, dim, 3, conjugate=True)
-        self.sfc2 = MyFC(dim, dim, 3, conjugate=False)
+        self.actn = nn.GELU()
 
-        self.reweight = Mlp(dim, dim // 4, dim * 3)
-
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
+        self.norm1 = MyNorm(dim)
+        self.norm2 = MyNorm(dim)
 
     def forward(self, x):
-        B, H, W, C = x.shape
-        h = self.sfc1(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        w = self.sfc2(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        c = self.mlp_c(x)
+        """
+        Args:
+            x: input features with shape of (num_windows*B, N, C)
+            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
+        """
+        B_, C, H, W = x.shape
 
-        a = (h + w + c).permute(0, 3, 1, 2).flatten(2).mean(2)
-        a = self.reweight(a).reshape(B, C, 3).permute(2, 0, 1).softmax(dim=0).unsqueeze(2).unsqueeze(2)
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.actn(x)
+       
+        '''
+        x = F.pad(x, (self.pad, self.pad, self.pad, self.pad) , "constant", 0)
+        
+        xs = torch.chunk(x, self.shift_size, 1)
 
-        x = h * a[0] + w * a[1] + c * a[2]
+        def shift(dim):
+            x_shift = [ torch.roll(x_c, shift, dim) for x_c, shift in zip(xs, range(-self.pad, self.pad+1))]
+            x_cat = torch.cat(x_shift, 1)
+            x_cat = torch.narrow(x_cat, 2, self.pad, H)
+            x_cat = torch.narrow(x_cat, 3, self.pad, W)
+            return x_cat
 
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        x_shift_lr = shift(3)
+        x_shift_td = shift(2)
+        '''
+        
+        x = self.myfc(x)
+        x = self.actn(x)
+        x = self.norm2(x)
+
+        x = self.conv3(x)
 
         return x
+
+    def extra_repr(self) -> str:
+        return f'dim={self.dim}, shift_size={self.shift_size}'
+
+    def flops(self, N):
+        # calculate flops for 1 window with token length of N
+        flops = 0
+        # conv1 
+        flops += N * self.dim * self.dim
+        # norm 1
+        flops += N * self.dim
+        # conv2_1 conv2_2
+        flops += N * self.dim * self.dim * 2
+        # x_lr + x_td
+        flops += N * self.dim
+        # norm2
+        flops += N * self.dim
+        # norm3
+        flops += N * self.dim * self.dim
+        return flops
 
 
 class MyBlock(nn.Module):
+    r""" Swin Transformer Block.
 
-    def __init__(self, dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=MyMLP):
+    Args:
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resulotion.
+        shift_size (int): Shift size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        as_bias (bool, optional): If True, add a learnable bias to Axial Mlp. Default: True
+        drop (float, optional): Dropout rate. Default: 0.0
+        drop_path (float, optional): Stochastic depth rate. Default: 0.0
+        act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
+    """
+
+    def __init__(self, dim, input_resolution, shift_size=7,
+                 mlp_ratio=4., as_bias=True, drop=0., drop_path=0.,
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+
         self.norm1 = norm_layer(dim)
-        self.attn = mlp_fn(dim, qkv_bias=qkv_bias, qk_scale=None, attn_drop=attn_drop)
+        self.axial_shift = MyMLPLayer(dim, shift_size=shift_size, as_bias=as_bias, proj_drop=drop)
 
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer)
-        self.skip_lam = skip_lam
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x))) / self.skip_lam
-        x = x + self.drop_path(self.mlp(self.norm2(x))) / self.skip_lam
+        B, C, H, W = x.shape
+
+        shortcut = x
+        x = self.norm1(x)
+
+        # axial shift block
+        x = self.axial_shift(x)  # B, C, H, W
+
+        # FFN
+        x = shortcut + self.drop_path(x)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
         return x
 
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, input_resolution={self.input_resolution}, " \
+               f"shift_size={self.shift_size}, mlp_ratio={self.mlp_ratio}"
 
-class PatchEmbedOverlapping(nn.Module):
-    """ 2D Image to Patch Embedding with overlapping
+    def flops(self):
+        flops = 0
+        H, W = self.input_resolution
+        # norm1
+        flops += self.dim * H * W
+        # shift mlp 
+        flops += self.axial_shift.flops(H * W)
+        # mlp
+        flops += 2 * H * W * self.dim * self.dim * self.mlp_ratio
+        # norm2
+        flops += self.dim * H * W
+        return flops
+
+
+class PatchMerging(nn.Module):
+    r""" Patch Merging Layer.
+
+    Args:
+        input_resolution (tuple[int]): Resolution of input feature.
+        dim (int): Number of input channels.
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
-    def __init__(self, patch_size=16, stride=16, padding=0, in_chans=3, embed_dim=768, norm_layer=None, groups=1):
-        super().__init__()
-        patch_size = to_2tuple(patch_size)
-        stride = to_2tuple(stride)
-        padding = to_2tuple(padding)
-        self.patch_size = patch_size
-        # remove image_size in model init to support dynamic image size
 
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride, padding=padding, groups=groups)
-        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+    def __init__(self, input_resolution, dim, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.reduction = nn.Conv2d(4 * dim, 2 * dim, 1, 1, bias=False)
+        self.norm = norm_layer(4 * dim)
 
     def forward(self, x):
-        x = self.proj(x)
+        """
+        x: B, H*W, C
+        """
+        B, C, H, W = x.shape
+        #assert L == H * W, "input feature has wrong size"
+        assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
+
+        x = x.view(B, C, H, W)
+
+        # x0 = x[:, :, 0::2, 0::2]  # B C H/2 W/2 
+        # x1 = x[:, :, 1::2, 0::2]  # B C H/2 W/2 
+        # x2 = x[:, :, 0::2, 1::2]  # B C H/2 W/2 
+        # x3 = x[:, :, 1::2, 1::2]  # B C H/2 W/2 
+        # x = torch.cat([x0, x1, x2, x3], 1)  # B 4*C H/2 W/2 
+        x = rearrange(x, "b c (h p1) (w p2) -> b (p1 p2 c) h w", p1=2, p2=2)
+
+        x = self.norm(x)
+        x = self.reduction(x)
+
         return x
 
+    def extra_repr(self) -> str:
+        return f"input_resolution={self.input_resolution}, dim={self.dim}"
 
-class Downsample(nn.Module):
-    """ Downsample transition stage
+    def flops(self):
+        H, W = self.input_resolution
+        flops = H * W * self.dim
+        flops += (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
+        return flops
+
+
+class BasicLayer(nn.Module):
+    """ A basic Swin Transformer layer for one stage.
+
+    Args:
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resolution.
+        depth (int): Number of blocks.
+        num_heads (int): Number of attention heads.
+        window_size (int): Local window size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
+        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
+        drop (float, optional): Dropout rate. Default: 0.0
+        attn_drop (float, optional): Attention dropout rate. Default: 0.0
+        drop_path (float | tuple[float], optional): Stochastic depth rate. Default: 0.0
+        norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
+        downsample (nn.Module | None, optional): Downsample layer at the end of the layer. Default: None
+        use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
     """
-    def __init__(self, in_embed_dim, out_embed_dim, patch_size):
-        super().__init__()
-        assert patch_size == 2, patch_size
-        self.proj = nn.Conv2d(in_embed_dim, out_embed_dim, kernel_size=(3, 3), stride=(2, 2), padding=1)
 
-    def forward(self, x):
-        x = x.permute(0, 3, 1, 2)
-        x = self.proj(x)  # B, C, H, W
-        x = x.permute(0, 2, 3, 1)
-        return x
-
-
-def basic_blocks(dim, index, layers, mlp_ratio=3., qkv_bias=False, qk_scale=None, attn_drop=0.,
-                 drop_path_rate=0., skip_lam=1.0, mlp_fn=MyMLP, **kwargs):
-    blocks = []
-
-    for block_idx in range(layers[index]):
-        block_dpr = drop_path_rate * (block_idx + sum(layers[:index])) / (sum(layers) - 1)
-        blocks.append(MyBlock(dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                      attn_drop=attn_drop, drop_path=block_dpr, skip_lam=skip_lam, mlp_fn=mlp_fn))
-    blocks = nn.Sequential(*blocks)
-
-    return blocks
-
-
-class MyNet(nn.Module):
-    """ MyMLP Network """
-    def __init__(self, layers, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
-        embed_dims=None, transitions=None, segment_dim=None, mlp_ratios=None, skip_lam=1.0,
-        qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-        norm_layer=nn.LayerNorm, mlp_fn=MyMLP, fork_feat=False, **kwargs):
+    def __init__(self, dim, input_resolution, depth, shift_size,
+                 mlp_ratio=4., as_bias=True, drop=0.,
+                 drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
 
         super().__init__()
-        if not fork_feat:
-            self.num_classes = num_classes
-        self.fork_feat = fork_feat
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.depth = depth
+        self.use_checkpoint = use_checkpoint
 
-        self.patch_embed = PatchEmbedOverlapping(patch_size=7, stride=4, padding=2, in_chans=3, embed_dim=embed_dims[0])
+        # build blocks
+        self.blocks = nn.ModuleList([
+            MyBlock(dim=dim, input_resolution=input_resolution,
+                              shift_size=shift_size,
+                              mlp_ratio=mlp_ratio,
+                              as_bias=as_bias,
+                              drop=drop, 
+                              drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
+                              norm_layer=norm_layer)
+            for i in range(depth)])
 
-        network = []
-        for i in range(len(layers)):
-            stage = basic_blocks(embed_dims[i], i, layers, mlp_ratio=mlp_ratios[i], qkv_bias=qkv_bias,
-                                 qk_scale=qk_scale, attn_drop=attn_drop_rate, drop_path_rate=drop_path_rate,
-                                 norm_layer=norm_layer, skip_lam=skip_lam, mlp_fn=mlp_fn)
-            network.append(stage)
-            if i >= len(layers) - 1:
-                break
-            if transitions[i] or embed_dims[i] != embed_dims[i+1]:
-                patch_size = 2 if transitions[i] else 1
-                network.append(Downsample(embed_dims[i], embed_dims[i+1], patch_size))
-
-        self.network = nn.ModuleList(network)
-
-        if self.fork_feat:
-            # add a norm layer for each output
-            self.out_indices = [0, 2, 4, 6]
-            for i_emb, i_layer in enumerate(self.out_indices):
-                if i_emb == 0 and os.environ.get('FORK_LAST3', None):
-                    # TODO: more elegant way
-                    """For RetinaNet, `start_level=1`. The first norm layer will not used.
-                    cmd: `FORK_LAST3=1 python -m torch.distributed.launch ...`
-                    """
-                    layer = nn.Identity()
-                else:
-                    layer = norm_layer(embed_dims[i_emb])
-                layer_name = f'norm{i_layer}'
-                self.add_module(layer_name, layer)
+        # patch merging layer
+        if downsample is not None:
+            self.downsample = downsample(input_resolution, dim=dim, norm_layer=norm_layer)
         else:
-            # Classifier head
-            self.norm = norm_layer(embed_dims[-1])
-            self.head = nn.Linear(embed_dims[-1], num_classes) if num_classes > 0 else nn.Identity()
-        self.apply(self.cls_init_weights)
+            self.downsample = None
 
-    def cls_init_weights(self, m):
+    def forward(self, x):
+        for blk in self.blocks:
+            if self.use_checkpoint:
+                x = checkpoint.checkpoint(blk, x)
+            else:
+                x = blk(x)
+        if self.downsample is not None:
+            x = self.downsample(x)
+        return x
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
+
+    def flops(self):
+        flops = 0
+        for blk in self.blocks:
+            flops += blk.flops()
+        if self.downsample is not None:
+            flops += self.downsample.flops()
+        return flops
+
+
+class PatchEmbed(nn.Module):
+    r""" Image to Patch Embedding
+
+    Args:
+        img_size (int): Image size.  Default: 224.
+        patch_size (int): Patch token size. Default: 4.
+        in_chans (int): Number of input image channels. Default: 3.
+        embed_dim (int): Number of linear projection output channels. Default: 96.
+        norm_layer (nn.Module, optional): Normalization layer. Default: None
+    """
+
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None):
+        super().__init__()
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        patches_resolution = [img_size[0] // patch_size[0], img_size[1] // patch_size[1]]
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.patches_resolution = patches_resolution
+        self.num_patches = patches_resolution[0] * patches_resolution[1]
+
+        self.in_chans = in_chans
+        self.embed_dim = embed_dim
+
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.norm = None
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        # FIXME look at relaxing size constraints
+        # assert H == self.img_size[0] and W == self.img_size[1], \
+        #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj(x)#.flatten(2).transpose(1, 2)  # B Ph*Pw C
+        if self.norm is not None:
+            x = self.norm(x)
+        return x
+
+    def flops(self):
+        Ho, Wo = self.patches_resolution
+        flops = Ho * Wo * self.embed_dim * self.in_chans * (self.patch_size[0] * self.patch_size[1])
+        if self.norm is not None:
+            flops += Ho * Wo * self.embed_dim
+        return flops
+
+
+def MyNorm(dim):
+    return nn.GroupNorm(1, dim)
+
+
+class My_MLP(nn.Module):
+    r""" AS-MLP
+        A PyTorch impl of : `AS-MLP: An Axial Shifted MLP Architecture for Vision`  -
+          https://arxiv.org/pdf/xxx.xxx
+
+    Args:
+        img_size (int | tuple(int)): Input image size. Default 224
+        patch_size (int | tuple(int)): Patch size. Default: 4
+        in_chans (int): Number of input image channels. Default: 3
+        num_classes (int): Number of classes for classification head. Default: 1000
+        embed_dim (int): Patch embedding dimension. Default: 96
+        depths (tuple(int)): Depth of each AS-MLP layer.
+        window_size (int): shift size. Default: 7
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4
+        as_bias (bool): If True, add a learnable bias to as-mlp block. Default: True
+        drop_rate (float): Dropout rate. Default: 0
+        drop_path_rate (float): Stochastic depth rate. Default: 0.1
+        norm_layer (nn.Module): Normalization layer. Default: nn.GroupNorm with group=1.
+        patch_norm (bool): If True, add normalization after patch embedding. Default: True
+        use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
+    """
+
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+                 embed_dim=96, depths=[2, 2, 6, 2], 
+                 shift_size=5, mlp_ratio=4., as_bias=True, 
+                 drop_rate=0., drop_path_rate=0.1,
+                 norm_layer=MyNorm, patch_norm=True,
+                 use_checkpoint=False, **kwargs):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.num_layers = len(depths)
+        self.embed_dim = embed_dim
+        self.patch_norm = patch_norm
+        self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
+        self.mlp_ratio = mlp_ratio
+
+        # split image into non-overlapping patches
+        self.patch_embed = PatchEmbed(
+            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
+            norm_layer=norm_layer if self.patch_norm else None)
+        num_patches = self.patch_embed.num_patches
+        patches_resolution = self.patch_embed.patches_resolution
+        self.patches_resolution = patches_resolution
+
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        # stochastic depth
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+
+        # build layers
+        self.layers = nn.ModuleList()
+        for i_layer in range(self.num_layers):
+            layer = BasicLayer(dim=int(embed_dim * 2 ** i_layer),
+                               input_resolution=(patches_resolution[0] // (2 ** i_layer),
+                                                 patches_resolution[1] // (2 ** i_layer)),
+                               depth=depths[i_layer],
+                               shift_size=shift_size,
+                               mlp_ratio=self.mlp_ratio,
+                               as_bias=as_bias,
+                               drop=drop_rate,
+                               drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                               norm_layer=norm_layer,
+                               downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
+                               use_checkpoint=use_checkpoint)
+            self.layers.append(layer)
+
+        self.norm = norm_layer(self.num_features)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
@@ -298,106 +657,82 @@ class MyNet(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, MyFC):
-            trunc_normal_(m.weight, std=.02)
-            nn.init.constant_(m.bias, 0)
 
-    def get_classifier(self):
-        return self.head
-
-    def reset_classifier(self, num_classes, global_pool=''):
-        self.num_classes = num_classes
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
-    def forward_embeddings(self, x):
+    def forward_features(self, x):
         x = self.patch_embed(x)
-        # B,C,H,W-> B,H,W,C
-        x = x.permute(0, 2, 3, 1)
-        return x
+        x = self.pos_drop(x)
 
-    def forward_tokens(self, x):
-        outs = []
-        for idx, block in enumerate(self.network):
-            x = block(x)
-            if self.fork_feat and idx in self.out_indices:
-                norm_layer = getattr(self, f'norm{idx}')
-                x_out = norm_layer(x)
-                outs.append(x_out.permute(0, 3, 1, 2).contiguous())
-        if self.fork_feat:
-            return outs
+        for layer in self.layers:
+            x = layer(x)
 
-        B, H, W, C = x.shape
-        x = x.reshape(B, -1, C)
+        x = self.norm(x)  # B C H W
+        x = self.avgpool(x)  # B C 1 1
+        x = torch.flatten(x, 1)
         return x
 
     def forward(self, x):
-        x = self.forward_embeddings(x)
-        # B, H, W, C -> B, N, C
-        x = self.forward_tokens(x)
-        if self.fork_feat:
-            return x
+        x = self.forward_features(x)
+        x = self.head(x)
+        return x
 
-        x = self.norm(x)
-        cls_out = self.head(x.mean(1))
-        return cls_out
+    def flops(self):
+        flops = 0
+        flops += self.patch_embed.flops()
+        for i, layer in enumerate(self.layers):
+            flops += layer.flops()
+        flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
+        flops += self.num_features * self.num_classes
+        return flops
+
+
+# MODEL:
+#   TYPE: asmlp
+#   NAME: asmlp_base_patch4_shift5_224
+#   DROP_PATH_RATE: 0.5
+#   ASMLP:
+#     EMBED_DIM: 128
+#     DEPTHS: [ 2, 2, 18, 2 ]
+#     SHIFT_SIZE: 5
+
+from .registry import register_model
+from ..data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+_cfg = {
+    'url': '',
+    'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': None,
+    'crop_pct': .96, 'interpolation': 'bicubic',
+    'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD, 'classifier': 'head'
+}
 
 
 @register_model
-def MyMLP_B1(pretrained=False, **kwargs):
-    transitions = [True, True, True, True]
-    layers = [2, 2, 4, 2]
-    mlp_ratios = [4, 4, 4, 4]
-    embed_dims = [64, 128, 320, 512]
-    model = MyNet(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
-                     mlp_ratios=mlp_ratios, mlp_fn=MyMLP, **kwargs)
-    model.default_cfg = default_cfgs['my_S']
+def mymlp_base_patch4_shift5_224(pretrained=False, **kwargs):
+    model = My_MLP(
+        img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+        embed_dim=128, depths=[2, 2, 18, 2], shift_size=5,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        use_checkpoint=False)
+    model.default_cfg = _cfg
     return model
 
 
 @register_model
-def MyMLP_B2(pretrained=False, **kwargs):
-    transitions = [True, True, True, True]
-    layers = [2, 3, 10, 3]
-    mlp_ratios = [4, 4, 4, 4]
-    embed_dims = [64, 128, 320, 512]
-    model = MyNet(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
-                     mlp_ratios=mlp_ratios, mlp_fn=MyMLP, **kwargs)
-    model.default_cfg = default_cfgs['my_S']
+def mymlp_small_patch4_shift5_224(pretrained=False, **kwargs):
+    model = My_MLP(
+        img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+        embed_dim=96, depths=[2, 2, 18, 2], shift_size=5,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        use_checkpoint=False)
+    model.default_cfg = _cfg
     return model
 
 
 @register_model
-def MyMLP_B3(pretrained=False, **kwargs):
-    transitions = [True, True, True, True]
-    layers = [3, 4, 18, 3]
-    mlp_ratios = [8, 8, 4, 4]
-    embed_dims = [64, 128, 320, 512]
-    model = MyNet(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
-                     mlp_ratios=mlp_ratios, mlp_fn=MyMLP, **kwargs)
-    model.default_cfg = default_cfgs['my_M']
+def mymlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
+    model = My_MLP(
+        img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+        embed_dim=96, depths=[2, 2, 6, 2], shift_size=5,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        use_checkpoint=False)
+    model.default_cfg = _cfg
     return model
-
-
-@register_model
-def MyMLP_B4(pretrained=False, **kwargs):
-    transitions = [True, True, True, True]
-    layers = [3, 8, 27, 3]
-    mlp_ratios = [8, 8, 4, 4]
-    embed_dims = [64, 128, 320, 512]
-    model = MyNet(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
-                     mlp_ratios=mlp_ratios, mlp_fn=MyMLP, **kwargs)
-    model.default_cfg = default_cfgs['my_L']
-    return model
-
-
-@register_model
-def MyMLP_B5(pretrained=False, **kwargs):
-    transitions = [True, True, True, True]
-    layers = [3, 4, 24, 3]
-    mlp_ratios = [4, 4, 4, 4]
-    embed_dims = [96, 192, 384, 768]
-    model = MyNet(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
-                     mlp_ratios=mlp_ratios, mlp_fn=MyMLP, **kwargs)
-    model.default_cfg = default_cfgs['my_L']
-    return model
-
