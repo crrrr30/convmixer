@@ -10,7 +10,6 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from torchvision.ops.deform_conv import deform_conv2d
 
 from einops import rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
@@ -117,7 +116,7 @@ __global__ void my_shift_backward_grad_input_kernel(
 '''
 
 
-class _shift(Function):
+class _my_shift(Function):
     @staticmethod
     def forward(ctx, input, shift):
         assert input.dim() == 4 and input.is_cuda
@@ -176,19 +175,19 @@ class _shift(Function):
         return grad_input, None, None
  
 
-def _shift_cuda(input, shift):
+def _my_shift_cuda(input, shift):
     """ shift kernel
     """
     assert shift >= 3 and shift % 2 == 1
 
     if input.is_cuda:
-        out = _shift.apply(input, shift)
+        out = _my_shift.apply(input, shift)
     else:
         raise NotImplementedError
     return out
 
 
-class Shift(nn.Module):
+class MyShift(nn.Module):
     def __init__(self, kernel_size):
         super().__init__()
         self.kernel_size = kernel_size
@@ -198,7 +197,7 @@ class Shift(nn.Module):
         if self.kernel_size == 1:
             return x
 
-        out = _shift_cuda(x, self.kernel_size)
+        out = _my_shift_cuda(x, self.kernel_size)
         return out
 
 
@@ -221,7 +220,7 @@ class Mlp(nn.Module):
         return x
 
 
-class CycleFC(nn.Module):
+class MyFC(nn.Module):
     """
     """
 
@@ -233,7 +232,7 @@ class CycleFC(nn.Module):
         groups: int = 1,
         bias: bool = True,
     ):
-        super(CycleFC, self).__init__()
+        super(MyFC, self).__init__()
 
         assert groups == 1
         if in_channels % groups != 0:
@@ -249,7 +248,7 @@ class CycleFC(nn.Module):
         else:
             self.channel_mixer = None
 
-        self.shift = Shift(kernel_size)
+        self.shift = MyShift(kernel_size)
         self.linear = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
 
     def forward(self, input):
@@ -278,7 +277,7 @@ class MyMLPLayer(nn.Module):
         self.shift_size = shift_size
         self.pad = shift_size // 2
         self.conv1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        self.myfc = CycleFC(in_channels=dim, out_channels=dim, kernel_size=shift_size)
+        self.myfc = MyFC(in_channels=dim, out_channels=dim, kernel_size=shift_size)
         self.conv3 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
 
         self.actn = nn.GELU()
