@@ -20,7 +20,10 @@ def Dtype(t):
         return 'half'
     elif isinstance(t, torch.cuda.DoubleTensor):
         return 'double'
-
+    else:
+        print("NOTYPE;", type(t))
+        if hasattr(t, "dtype"):
+            print(t.dtype)
 
 @cupy._util.memoize(for_each_device=True)
 def load_kernel(kernel_name, code, **kwargs):
@@ -173,7 +176,10 @@ def _shift_cuda(input, shift, dim):
     """
     assert shift >=3 and shift % 2 == 1
     assert dim == 2 or dim == 3
-    print("SHIFT_INPUT_TYPE:", Dtype(input))
+    print("SHIFT_INPUT_DTYPE:", Dtype(input))
+    print("SHIFT_INPUT_T_DTYPE:", input.dtype)
+    print("SHIFT_INPUT_TYPE:", type(input))
+    
     if input.is_cuda:
         out = _shift.apply(input, shift, dim)
     else:
