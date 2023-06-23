@@ -33,11 +33,12 @@ Stream = namedtuple('Stream', ['ptr'])
 
 
 def Dtype(t):
-    return 'float'
     if isinstance(t, torch.cuda.FloatTensor):
         return 'float'
     elif isinstance(t, torch.cuda.DoubleTensor):
         return 'double'
+    elif isinstance(t, torch.Tensor) and t.dtype == torch.float16:
+        return 'half'
 
 
 @cupy._util.memoize(for_each_device=True)
