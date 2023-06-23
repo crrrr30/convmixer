@@ -173,7 +173,7 @@ def _shift_cuda(input, shift, dim):
     """
     assert shift >=3 and shift % 2 == 1
     assert dim == 2 or dim == 3
-
+    print("SHIFT_INPUT_TYPE:", Dtype(input))
     if input.is_cuda:
         out = _shift.apply(input, shift, dim)
     else:
