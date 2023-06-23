@@ -15,7 +15,7 @@ from einops import rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
 
-from my_shift_cuda import MyShift
+from .my_shift_cuda import MyShift
 
 
 class Mlp(nn.Module):
