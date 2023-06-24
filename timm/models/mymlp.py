@@ -56,14 +56,15 @@ class MyFC(nn.Module):
             raise ValueError('in_channels must be divisible by groups')
         if out_channels % groups != 0:
             raise ValueError('out_channels must be divisible by groups')
-        if in_channels % kernel_size**2 != 0:
-            assert in_channels % 8 == 0
-            d_prime = {3: in_channels * 9 // 8, 5: in_channels * 25 // 16, 7: in_channels * 49 // 64}[kernel_size]
-            self.channel_mixer = nn.Conv2d(in_channels, d_prime, 1, 1, 0)
-            in_channels = d_prime
-            assert in_channels % kernel_size**2 == 0
-        else:
-            self.channel_mixer = None
+        # if in_channels % kernel_size**2 != 0:
+        #     assert in_channels % 8 == 0
+        #     d_prime = {3: in_channels * 9 // 8, 5: in_channels * 25 // 16, 7: in_channels * 49 // 64}[kernel_size]
+        #     self.channel_mixer = nn.Conv2d(in_channels, d_prime, 1, 1, 0)
+        #     in_channels = d_prime
+        #     assert in_channels % kernel_size**2 == 0
+        # else:
+        #     self.channel_mixer = None
+        self.channel_mixer = None
 
         self.shift = MyShift(kernel_size)
         self.linear = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
