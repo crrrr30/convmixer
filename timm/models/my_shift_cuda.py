@@ -21,31 +21,34 @@ def Dtype(t):
     elif isinstance(t, torch.cuda.DoubleTensor):
         return 'double'
 
+kernels = {}
 
 @cupy._util.memoize(for_each_device=True)
 def load_kernel(kernel_name, code, **kwargs):
     code = Template(code).substitute(**kwargs)
+    return cupy.RawKernel(code, kernel_name)
+    if not kernel_name in kernels.keys():
+        kernels[kernel_name] = cupy.RawKernel(code, kernel_name)
+    return kernels[kernel_name]
     kernel_code = cupy.cuda.compile_with_cache(code)
     return kernel_code.get_function(kernel_name)
 
 
 CUDA_NUM_THREADS = 1024
 
-kernel_loop = '''
-#define CUDA_KERNEL_LOOP(i, n)                        \
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
-      i < (n);                                       \
-      i += blockDim.x * gridDim.x)
-'''
-
 
 def GET_BLOCKS(N):
     return (N + CUDA_NUM_THREADS - 1) // CUDA_NUM_THREADS
 
 
-_shift_kernel = kernel_loop + '''
-extern "C"
-__global__ void myshift_forward_kernel(
+_shift_kernel = '''
+#include <cupy/carray.cuh>
+#define CUDA_KERNEL_LOOP(i, n)                        \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+      i < (n);                                       \
+      i += blockDim.x * gridDim.x)
+
+extern "C" __global__ void myshift_forward_kernel(
 const ${Dtype}* bottom_data, ${Dtype}* top_data) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -70,9 +73,14 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
 '''
 
 
-_shift_kernel_backward_grad_input = kernel_loop + '''
-extern "C"
-__global__ void myshift_backward_grad_input_kernel(
+_shift_kernel_backward_grad_input = '''
+#include <cupy/carray.cuh>
+#define CUDA_KERNEL_LOOP(i, n)                        \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+      i < (n);                                       \
+      i += blockDim.x * gridDim.x)
+      
+extern "C" __global__ void myshift_backward_grad_input_kernel(
     const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -178,7 +186,6 @@ class MyShift(nn.Module):
         assert dim == 2 or dim == 3
         assert kernel_size % 2 == 1
         
-    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(self, x):
         if self.kernel_size == 1:
             return x
