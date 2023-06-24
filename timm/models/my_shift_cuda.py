@@ -16,16 +16,15 @@ Stream = namedtuple('Stream', ['ptr'])
 def Dtype(t):
     if isinstance(t, torch.cuda.FloatTensor):
         return 'float'
+    if isinstance(t, torch.Tensor) and t.dtype == torch.float16:
+        return 'half'
     elif isinstance(t, torch.cuda.DoubleTensor):
         return 'double'
-    elif isinstance(t, torch.Tensor) and t.dtype == torch.float16:
-        return 'half'
 
 
 @cupy._util.memoize(for_each_device=True)
-def load_my_kernel(kernel_name, code, **kwargs):
+def load_kernel(kernel_name, code, **kwargs):
     code = Template(code).substitute(**kwargs)
-    # return cupy.RawKernel(code, kernel_name)
     kernel_code = cupy.cuda.compile_with_cache(code)
     return kernel_code.get_function(kernel_name)
 
@@ -44,7 +43,7 @@ def GET_BLOCKS(N):
     return (N + CUDA_NUM_THREADS - 1) // CUDA_NUM_THREADS
 
 
-_my_shift_kernel = kernel_loop + '''
+_shift_kernel = kernel_loop + '''
 extern "C"
 __global__ void my_shift_forward_kernel(
 const ${Dtype}* bottom_data, ${Dtype}* top_data) {
@@ -71,7 +70,7 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
 '''
 
 
-_my_shift_kernel_backward_grad_input = kernel_loop + '''
+_shift_kernel_backward_grad_input = kernel_loop + '''
 extern "C"
 __global__ void my_shift_backward_grad_input_kernel(
     const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
@@ -98,9 +97,9 @@ __global__ void my_shift_backward_grad_input_kernel(
 '''
 
 
-class _my_shift(Function):
+class _shift(Function):
     @staticmethod
-    def forward(ctx, input, shift):
+    def forward(ctx, input, shift, dim):
         assert input.dim() == 4 and input.is_cuda
         batch_size, channels, height, width = input.size()
 
@@ -108,11 +107,11 @@ class _my_shift(Function):
         n = output.numel()
 
         with torch.cuda.device_of(input):
-            f = load_my_kernel('my_shift_forward_kernel', _my_shift_kernel, Dtype=Dtype(input), nthreads=n,
-                num=batch_size, channels=channels, 
-                height=height, width=width,
-                shift=shift, group=int(math.ceil(channels/shift))
-            )
+            f = load_kernel('my_shift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
+                            num=batch_size, channels=channels, 
+                            height=height, width=width,
+                            shift=shift, dim=dim, group=int(math.ceil(channels/shift))
+                            )
 
             f(block=(CUDA_NUM_THREADS,1,1),
               grid=(GET_BLOCKS(n),1,1),
@@ -120,7 +119,7 @@ class _my_shift(Function):
               stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
 
         ctx.save_for_backward(input)
-        ctx.shift = shift
+        ctx.shift, ctx.dim = shift, dim
         return output
     
     @staticmethod
@@ -129,16 +128,16 @@ class _my_shift(Function):
         if not grad_output.is_contiguous():
             grad_output = grad_output.contiguous()
         input = ctx.saved_tensors[0]
-        shift = ctx.shift
+        shift, dim = ctx.shift, ctx.dim
         batch_size, channels, height, width = input.size()
 
         grad_input = None
 
         opt = dict(Dtype=Dtype(grad_output),
-            num=batch_size, channels=channels,
-            height=height, width=width,
-            shift=shift, group=int(math.ceil(channels/shift))
-        )
+                   num=batch_size, channels=channels,
+                   height=height, width=width,
+                   shift=shift, dim=dim, group=int(math.ceil(channels/shift))
+              )
 
         with torch.cuda.device_of(input):
             if ctx.needs_input_grad[0]:
@@ -147,8 +146,8 @@ class _my_shift(Function):
                 n = grad_input.numel()
                 opt['nthreads'] = n
 
-                f = load_my_kernel('my_shift_backward_grad_input_kernel',
-                                _my_shift_kernel_backward_grad_input, **opt)
+                f = load_kernel('my_shift_backward_grad_input_kernel',
+                                _shift_kernel_backward_grad_input, **opt)
                 f(block=(CUDA_NUM_THREADS,1,1),
                   grid=(GET_BLOCKS(n),1,1),
                   args=[grad_output.data_ptr(), grad_input.data_ptr()],
@@ -156,30 +155,45 @@ class _my_shift(Function):
 
         return grad_input, None, None
  
-
-def _my_shift_cuda(input, shift):
+def _shift_cuda(input, shift, dim):
     """ shift kernel
     """
-    assert shift >= 3 and shift % 2 == 1
+    assert shift >=3 and shift % 2 == 1
+    assert dim == 2 or dim == 3
 
     if input.is_cuda:
-        out = _my_shift.apply(input, shift)
+        out = _shift.apply(input, shift, dim)
     else:
         raise NotImplementedError
     return out
 
 
 class MyShift(nn.Module):
-    def __init__(self, kernel_size):
-        super().__init__()
+    def __init__(self,
+                 kernel_size,
+                 dim=3):
+        super(MyShift, self).__init__()
         self.kernel_size = kernel_size
+        self.dim = dim
+        assert dim == 2 or dim == 3
         assert kernel_size % 2 == 1
 
-    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(self, x):
         if self.kernel_size == 1:
             return x
 
-        out = _my_shift_cuda(x, self.kernel_size)
+        out = _shift_cuda(x, self.kernel_size, self.dim)
         return out
-    
+
+
+def torch_shift(x, shift_size, dim):
+    B_, C, H, W = x.shape
+    pad = shift_size // 2
+
+    x = F.pad(x, (pad, pad, pad, pad) , "constant", 0)
+    xs = torch.chunk(x, shift_size, 1)
+    x_shift = [ torch.roll(x_c, shift, dim) for x_c, shift in zip(xs, range(-pad, pad+1))]
+    x_cat = torch.cat(x_shift, 1)
+    x_cat = torch.narrow(x_cat, 2, pad, H)
+    x_cat = torch.narrow(x_cat, 3, pad, W)
+    return x_cat
