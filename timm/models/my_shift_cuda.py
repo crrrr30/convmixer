@@ -45,7 +45,7 @@ def GET_BLOCKS(N):
 
 _shift_kernel = kernel_loop + '''
 extern "C"
-__global__ void my_shift_forward_kernel(
+__global__ void myshift_forward_kernel(
 const ${Dtype}* bottom_data, ${Dtype}* top_data) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -72,7 +72,7 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
 
 _shift_kernel_backward_grad_input = kernel_loop + '''
 extern "C"
-__global__ void my_shift_backward_grad_input_kernel(
+__global__ void myshift_backward_grad_input_kernel(
     const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -107,7 +107,7 @@ class _shift(Function):
         n = output.numel()
 
         with torch.cuda.device_of(input):
-            f = load_kernel('my_shift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
+            f = load_kernel('myshift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
                             num=batch_size, channels=channels, 
                             height=height, width=width,
                             shift=shift, dim=dim, group=int(math.ceil(channels/shift))
@@ -146,7 +146,7 @@ class _shift(Function):
                 n = grad_input.numel()
                 opt['nthreads'] = n
 
-                f = load_kernel('my_shift_backward_grad_input_kernel',
+                f = load_kernel('myshift_backward_grad_input_kernel',
                                 _shift_kernel_backward_grad_input, **opt)
                 f(block=(CUDA_NUM_THREADS,1,1),
                   grid=(GET_BLOCKS(n),1,1),
