@@ -177,7 +177,8 @@ class MyShift(nn.Module):
         self.dim = dim
         assert dim == 2 or dim == 3
         assert kernel_size % 2 == 1
-
+        
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float64)
     def forward(self, x):
         if self.kernel_size == 1:
             return x
