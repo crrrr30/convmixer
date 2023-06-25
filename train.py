@@ -69,6 +69,7 @@ except ImportError as e:
 
 has_compile = hasattr(torch, 'compile')
 if has_compile:
+    print("CACHE SIZE LIMIT UPDATED TO 128")
     torch._dynamo.config.cache_size_limit = 128
 
 
