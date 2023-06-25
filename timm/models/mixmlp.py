@@ -170,7 +170,7 @@ class EachRandomShift(nn.Module):
         if offsets is None:
             offsets = torch.randint(-(self.kernel_size // 2), self.kernel_size // 2 + 1, size=(x.shape[1] * 2,)).to(x.device)
         out = _shift_cuda(x, offsets)
-        return out, offsets
+        return out                                                          #, offsets
 
 x = torch.randn(4, 768, 54, 54).cuda().requires_grad_()
 f = EachRandomShift(5)
