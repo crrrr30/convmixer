@@ -24,7 +24,7 @@ torchrun --nproc_per_node=8 train.py \
     &> logs.out
 
 pip install datasets einops cupy-cuda11x tabulate -U
-git clone https://github.com/crrrr30/convmixer -b arrow
+git clone https://github.com/crrrr30/convmixer -b new
 
 wget https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/download/b2-linux
 chmod +x b2-linux
