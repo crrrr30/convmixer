@@ -59,8 +59,14 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
     ${Dtype} value = 0;
     const int s1 = c % ${shift} - ${shift} / 2;
     const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
-    const int h_prime = h + s1;
-    const int w_prime = w + s2;
+    if (${conjugate}) {
+        const int h_prime = h + s1;
+        const int w_prime = w + s2;
+    }
+    else {
+        const int h_prime = h - s1;
+        const int w_prime = w - s2;
+    }
 
     if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
         const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
@@ -91,8 +97,14 @@ extern "C" __global__ void myshift_backward_grad_input_kernel(
     ${Dtype} value = 0;
     const int s1 = c % ${shift} - ${shift} / 2;
     const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
-    const int h_prime = h + s1;
-    const int w_prime = w + s2;
+    if (${conjugate}) {
+        const int h_prime = h + s1;
+        const int w_prime = w + s2;
+    }
+    else {
+        const int h_prime = h - s1;
+        const int w_prime = w - s2;
+    }
 
     if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
         const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
@@ -107,7 +119,7 @@ extern "C" __global__ void myshift_backward_grad_input_kernel(
 
 class _shift(Function):
     @staticmethod
-    def forward(ctx, input, shift, dim):
+    def forward(ctx, input, shift, dim, conjugate):
         assert input.dim() == 4 and input.is_cuda
         batch_size, channels, height, width = input.size()
 
@@ -118,7 +130,8 @@ class _shift(Function):
             f = load_kernel('myshift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
                             num=batch_size, channels=channels, 
                             height=height, width=width,
-                            shift=shift, dim=dim, group=int(math.ceil(channels/shift))
+                            shift=shift, dim=dim, group=int(math.ceil(channels/shift)),
+                            conjugate=conjugate
                             )
 
             f(block=(CUDA_NUM_THREADS,1,1),
@@ -127,7 +140,7 @@ class _shift(Function):
               stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
 
         ctx.save_for_backward(input)
-        ctx.shift, ctx.dim = shift, dim
+        ctx.shift, ctx.dim, ctx.conjugate = shift, dim, conjugate
         return output
     
     @staticmethod
@@ -136,7 +149,7 @@ class _shift(Function):
         if not grad_output.is_contiguous():
             grad_output = grad_output.contiguous()
         input = ctx.saved_tensors[0]
-        shift, dim = ctx.shift, ctx.dim
+        shift, dim, conjugate = ctx.shift, ctx.dim, ctx.conjugate
         batch_size, channels, height, width = input.size()
 
         grad_input = None
@@ -144,7 +157,8 @@ class _shift(Function):
         opt = dict(Dtype=Dtype(grad_output),
                    num=batch_size, channels=channels,
                    height=height, width=width,
-                   shift=shift, dim=dim, group=int(math.ceil(channels/shift))
+                   shift=shift, dim=dim, group=int(math.ceil(channels/shift)),
+                   conjugate=conjugate
               )
 
         with torch.cuda.device_of(input):
@@ -163,14 +177,14 @@ class _shift(Function):
 
         return grad_input, None, None
  
-def _shift_cuda(input, shift, dim):
+def _shift_cuda(input, shift, dim, conjugate):
     """ shift kernel
     """
     assert shift >=3 and shift % 2 == 1
     assert dim == 2 or dim == 3
 
     if input.is_cuda:
-        out = _shift.apply(input, shift, dim)
+        out = _shift.apply(input, shift, dim, conjugate)
     else:
         raise NotImplementedError
     return out
@@ -179,10 +193,12 @@ def _shift_cuda(input, shift, dim):
 class MyShift(nn.Module):
     def __init__(self,
                  kernel_size,
-                 dim=3):
+                 dim=3,
+                 conjugate=False):
         super(MyShift, self).__init__()
         self.kernel_size = kernel_size
         self.dim = dim
+        self.conjugate = conjugate
         assert dim == 2 or dim == 3
         assert kernel_size % 2 == 1
         
@@ -191,18 +207,5 @@ class MyShift(nn.Module):
         if self.kernel_size == 1:
             return x
 
-        out = _shift_cuda(x, self.kernel_size, self.dim)
+        out = _shift_cuda(x, self.kernel_size, self.dim, self.conjugate)
         return out
-
-
-def torch_shift(x, shift_size, dim):
-    B_, C, H, W = x.shape
-    pad = shift_size // 2
-
-    x = F.pad(x, (pad, pad, pad, pad) , "constant", 0)
-    xs = torch.chunk(x, shift_size, 1)
-    x_shift = [ torch.roll(x_c, shift, dim) for x_c, shift in zip(xs, range(-pad, pad+1))]
-    x_cat = torch.cat(x_shift, 1)
-    x_cat = torch.narrow(x_cat, 2, pad, H)
-    x_cat = torch.narrow(x_cat, 3, pad, W)
-    return x_cat
