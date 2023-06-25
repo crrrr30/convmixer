@@ -16,6 +16,7 @@ from einops._torch_specific import allow_ops_in_compiled_graph  # requires einop
 allow_ops_in_compiled_graph()
 
 from .my_shift_cuda import MyShift
+from .my_shift_cuda_conj import MyShiftConj
 
 
 class Mlp(nn.Module):
@@ -66,9 +67,9 @@ class MyFC(nn.Module):
         #     self.channel_mixer = None
         self.channel_mixer = None
 
-        self.shift1 = MyShift(kernel_size, conjugate=False)
+        self.shift1 = MyShift(kernel_size)
         self.linear1 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
-        self.shift2 = MyShift(kernel_size, conjugate=True)
+        self.shift2 = MyShiftConj(kernel_size)
         self.linear2 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
 
     def forward(self, input):

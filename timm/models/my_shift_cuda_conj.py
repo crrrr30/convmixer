@@ -48,7 +48,7 @@ _shift_kernel = '''
       i < (n);                                       \
       i += blockDim.x * gridDim.x)
 
-extern "C" __global__ void myshift_forward_kernel(
+extern "C" __global__ void myshift_conj_forward_kernel(
 const ${Dtype}* bottom_data, ${Dtype}* top_data) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -59,8 +59,8 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data) {
     ${Dtype} value = 0;
     const int s1 = c % ${shift} - ${shift} / 2;
     const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
-    const int h_prime = h + s1;
-    const int w_prime = w + s2;
+    const int h_prime = h - s1;
+    const int w_prime = w - s2;
 
     if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
         const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
@@ -80,7 +80,7 @@ _shift_kernel_backward_grad_input = '''
       i < (n);                                       \
       i += blockDim.x * gridDim.x)
       
-extern "C" __global__ void myshift_backward_grad_input_kernel(
+extern "C" __global__ void myshift_conj_backward_grad_input_kernel(
     const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff) {
   CUDA_KERNEL_LOOP(index, ${nthreads}) {
     const int n = index / ${channels} / ${height} / ${width};
@@ -91,8 +91,8 @@ extern "C" __global__ void myshift_backward_grad_input_kernel(
     ${Dtype} value = 0;
     const int s1 = c % ${shift} - ${shift} / 2;
     const int s2 = (c / ${shift}) % ${shift} - ${shift} / 2;
-    const int h_prime = h + s1;
-    const int w_prime = w + s2;
+    const int h_prime = h - s1;
+    const int w_prime = w - s2;
 
     if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
         const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
@@ -105,7 +105,7 @@ extern "C" __global__ void myshift_backward_grad_input_kernel(
 '''
 
 
-class _shift(Function):
+class _shift_conj(Function):
     @staticmethod
     def forward(ctx, input, shift, dim):
         assert input.dim() == 4 and input.is_cuda
@@ -115,7 +115,7 @@ class _shift(Function):
         n = output.numel()
 
         with torch.cuda.device_of(input):
-            f = load_kernel('myshift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
+            f = load_kernel('myshift_conj_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
                             num=batch_size, channels=channels, 
                             height=height, width=width,
                             shift=shift, dim=dim, group=int(math.ceil(channels/shift))
@@ -154,7 +154,7 @@ class _shift(Function):
                 n = grad_input.numel()
                 opt['nthreads'] = n
 
-                f = load_kernel('myshift_backward_grad_input_kernel',
+                f = load_kernel('myshift_conj_backward_grad_input_kernel',
                                 _shift_kernel_backward_grad_input, **opt)
                 f(block=(CUDA_NUM_THREADS,1,1),
                   grid=(GET_BLOCKS(n),1,1),
@@ -163,24 +163,24 @@ class _shift(Function):
 
         return grad_input, None, None
  
-def _shift_cuda(input, shift, dim):
+def _shift_conj_cuda(input, shift, dim):
     """ shift kernel
     """
     assert shift >=3 and shift % 2 == 1
     assert dim == 2 or dim == 3
 
     if input.is_cuda:
-        out = _shift.apply(input, shift, dim)
+        out = _shift_conj.apply(input, shift, dim)
     else:
         raise NotImplementedError
     return out
 
 
-class MyShift(nn.Module):
+class MyShiftConj(nn.Module):
     def __init__(self,
                  kernel_size,
                  dim=3):
-        super(MyShift, self).__init__()
+        super(MyShiftConj, self).__init__()
         self.kernel_size = kernel_size
         self.dim = dim
         assert dim == 2 or dim == 3
@@ -191,5 +191,5 @@ class MyShift(nn.Module):
         if self.kernel_size == 1:
             return x
 
-        out = _shift_cuda(x, self.kernel_size, self.dim)
+        out = _shift_conj_cuda(x, self.kernel_size, self.dim)
         return out
