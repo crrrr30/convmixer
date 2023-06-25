@@ -235,7 +235,7 @@ class MixMLPLayer(nn.Module):
         self.shift_size = shift_size
         self.pad = shift_size // 2
         self.conv1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        self.branches = nn.ModuleList([TokenMixLinear(dim, shift_size) for _ in range(3)])
+        self.branches = nn.ModuleList([TokenMixLinear(dim, shift_size) for _ in range(2)])
         self.conv3 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
 
         self.actn = nn.GELU()
