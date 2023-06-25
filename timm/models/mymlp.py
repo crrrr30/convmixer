@@ -66,8 +66,10 @@ class MyFC(nn.Module):
         #     self.channel_mixer = None
         self.channel_mixer = None
 
-        self.shift = MyShift(kernel_size)
-        self.linear = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
+        self.shift1 = MyShift(kernel_size, conjugate=False)
+        self.linear1 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
+        self.shift2 = MyShift(kernel_size, conjugate=True)
+        self.linear2 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
 
     def forward(self, input):
         """
@@ -76,7 +78,7 @@ class MyFC(nn.Module):
         """
         if self.channel_mixer:
             input = self.channel_mixer(input)
-        return self.linear(self.shift(input))
+        return self.linear1(self.shift1(input)) + self.linear2(self.shift2(input))
 
 class MyMLPLayer(nn.Module):
     r""" Axial shift  
