@@ -23,7 +23,7 @@ torchrun --nproc_per_node=8 train.py \
     --clip-grad 5.0 \
     &> logs.out
 
-pip install datasets einops cupy-cuda11x tabulate
+pip install datasets einops cupy-cuda11x tabulate -U
 git clone https://github.com/crrrr30/convmixer -b arrow
 
 wget https://github.com/Backblaze/B2_Command_Line_Tool/releases/latest/download/b2-linux
