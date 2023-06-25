@@ -1,5 +1,183 @@
+# the code is modified from https://github.com/d-li14/involution/blob/main/cls/mmcls/models/utils/involution_cuda.py
+from torch.autograd import Function
+import torch
+from torch.nn.modules.utils import _pair
+import torch.nn.functional as F
+import torch.nn as nn
+
+from collections import namedtuple
+import cupy
+from string import Template
+import math
+
+Stream = namedtuple('Stream', ['ptr'])
+
+
+def Dtype(t):
+    if isinstance(t, torch.cuda.FloatTensor):
+        return 'float'
+    if isinstance(t, torch.Tensor) and t.dtype == torch.float16:
+        return 'half'
+    elif isinstance(t, torch.cuda.DoubleTensor):
+        return 'double'
+
+
+@cupy._util.memoize(for_each_device=True)
+def load_kernel(kernel_name, code, **kwargs):
+    code = Template(code).substitute(**kwargs)
+    kernel_code = cupy.cuda.compile_with_cache(code)
+    return kernel_code.get_function(kernel_name)
+
+
+CUDA_NUM_THREADS = 1024
+
+
+def GET_BLOCKS(N):
+    return (N + CUDA_NUM_THREADS - 1) // CUDA_NUM_THREADS
+
+
+_shift_kernel = '''
+#define CUDA_KERNEL_LOOP(i, n)                        \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+      i < (n);                                       \
+      i += blockDim.x * gridDim.x)
+
+extern "C" __global__ void myshift_forward_kernel(
+const ${Dtype}* bottom_data, ${Dtype}* top_data, int* offsets) {
+  CUDA_KERNEL_LOOP(index, ${nthreads}) {
+    const int n = index / ${channels} / ${height} / ${width};
+    const int c = (index / ${height} / ${width}) % ${channels};
+    const int h = (index / ${width}) % ${height};
+    const int w = index % ${width};
+
+    ${Dtype} value = 0;
+    const int s1 = offsets[2 * c];
+    const int s2 = offsets[2 * c + 1];
+    const int h_prime = h + s1;
+    const int w_prime = w + s2;
+
+    if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
+        const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
+        value = bottom_data[offset];
+    }
+
+    top_data[index] = value;
+  }
+}
+'''
+
+
+_shift_kernel_backward_grad_input = '''
+#define CUDA_KERNEL_LOOP(i, n)                        \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; \
+      i < (n);                                       \
+      i += blockDim.x * gridDim.x)
+      
+extern "C" __global__ void myshift_backward_grad_input_kernel(
+    const ${Dtype}* const top_diff, ${Dtype}* const bottom_diff, int* offsets) {
+  CUDA_KERNEL_LOOP(index, ${nthreads}) {
+    const int n = index / ${channels} / ${height} / ${width};
+    const int c = (index / ${height} / ${width}) % ${channels};
+    const int h = (index / ${width}) % ${height};
+    const int w = index % ${width};
+    
+    ${Dtype} value = 0;
+    const int s1 = offsets[2 * c];
+    const int s2 = offsets[2 * c + 1];
+    const int h_prime = h + s1;
+    const int w_prime = w + s2;
+
+    if ((h_prime >= 0 && h_prime < ${height}) && (w_prime >= 0 && w_prime < ${width})) {
+        const int offset = ((n * ${channels} + c) * ${height} + h_prime) * ${width} + w_prime;
+        value = top_diff[offset];
+    }
+    
+    bottom_diff[index] = value;
+  }
+}
+'''
+
+
+class _shift(Function):
+    @staticmethod
+    def forward(ctx, input, offsets):
+        assert input.dim() == 4 and input.is_cuda and offsets.is_cuda
+        batch_size, channels, height, width = input.size()
+
+        output = input.new(batch_size, channels, height, width)
+        n = output.numel()
+
+        with torch.cuda.device_of(input):
+            f = load_kernel('myshift_forward_kernel', _shift_kernel, Dtype=Dtype(input), nthreads=n,
+                            num=batch_size, channels=channels, height=height, width=width)
+
+            f(block=(CUDA_NUM_THREADS,1,1),
+              grid=(GET_BLOCKS(n),1,1),
+              args=[input.data_ptr(), output.data_ptr(), offsets.data_ptr()],
+              stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
+
+        ctx.save_for_backward(input)
+        ctx.offsets = offsets
+        return output
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        assert grad_output.is_cuda
+        if not grad_output.is_contiguous():
+            grad_output = grad_output.contiguous()
+        input = ctx.saved_tensors[0]
+        offsets = ctx.offsets
+        batch_size, channels, height, width = input.size()
+
+        grad_input = None
+
+        with torch.cuda.device_of(input):
+            if ctx.needs_input_grad[0]:
+                grad_input = input.new(input.size())
+
+                n = grad_input.numel()
+
+                f = load_kernel('myshift_backward_grad_input_kernel', _shift_kernel_backward_grad_input, Dtype=Dtype(input), nthreads=n,
+                            num=batch_size, channels=channels, height=height, width=width)
+                f(block=(CUDA_NUM_THREADS,1,1),
+                  grid=(GET_BLOCKS(n),1,1),
+                  args=[grad_output.data_ptr(), grad_input.data_ptr(), offsets.data_ptr()],
+                  stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
+
+        return grad_input, None, None
+ 
+def _shift_cuda(input, offsets):
+    """ shift kernel
+    """
+
+    if input.is_cuda:
+        out = _shift.apply(input, offsets)
+    else:
+        raise NotImplementedError
+    return out
+
+
+class EachRandomShift(nn.Module):
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.kernel_size = kernel_size
+        
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
+    def forward(self, x, offsets=None):
+        if self.kernel_size == 1:
+            return x
+
+        if offsets is None:
+            offsets = torch.randint(-(self.kernel_size // 2), self.kernel_size // 2 + 1, size=(x.shape[1] * 2,)).to(x.device)
+        out = _shift_cuda(x, offsets)
+        return out, offsets
+
+x = torch.randn(4, 768, 54, 54).cuda().requires_grad_()
+f = EachRandomShift(5)
+y, o = f(x)
+y.sum().backward()
 # --------------------------------------------------------
-# Mix-MLP
+# My-MLP
 # Licensed under The MIT License [see LICENSE for details]
 # --------------------------------------------------------
 
@@ -11,10 +189,12 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
-from einops.layers.torch import Rearrange
 from einops import rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
+
+from .my_shift_cuda import MyShift
+from .my_shift_cuda_conj import MyShiftConj
 
 
 class Mlp(nn.Module):
@@ -36,53 +216,29 @@ class Mlp(nn.Module):
         return x
 
 
-class Shift(nn.Module):
-    def __init__(self, shift, dim):
-        super().__init__()
-        self.shift = shift
-        self.dim = dim
-        
-    def forward(self, x):
-        return torch.roll(x, self.shift, self.dim)
+TokenMixLinear = lambda dim, kernel_size: nn.Sequential(
+    EachRandomShift(kernel_size),
+    nn.Conv2d(dim, dim, 1, 1, 0, groups=1)
+)
 
-
-class MyMLPLayer(nn.Module):
+class MixMLPLayer(nn.Module):
     r""" Axial shift  
 
     Args:
         dim (int): Number of input channels.
-        window_size (int): shift size .
+        shift_size (int): shift size .
         as_bias (bool, optional):  If True, add a learnable bias to as mlp. Default: True
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
 
-    def __init__(self, dim, input_resolution, window_size, as_bias=True, proj_drop=0., layer_idx=0):
+    def __init__(self, dim, shift_size, as_bias=True, proj_drop=0.):
 
         super().__init__()
-        assert window_size % 2 == 0 and input_resolution[0] % window_size == 0 and input_resolution[1] % window_size == 0
         self.dim = dim
-        self.window_size = window_size
-        self.pad = window_size // 2
-        
+        self.shift_size = shift_size
+        self.pad = shift_size // 2
         self.conv1 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        
-        self.shift_size = shift_size = window_size // 2
-        self.mix_h = nn.Sequential(
-            Rearrange("b c h w -> b h c w"),
-            nn.Conv2d(input_resolution[0], input_resolution[0], kernel_size=1, groups=input_resolution[0] // window_size),
-            Shift(shift=(-1) ** (layer_idx % 2) * shift_size, dim=1),
-            nn.Conv2d(input_resolution[0], input_resolution[0], kernel_size=1, groups=input_resolution[0] // window_size),
-            Rearrange("b h c w -> b c h w"),
-            nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        )
-        self.mix_w = nn.Sequential(
-            Rearrange("b c h w -> b w c h"),
-            nn.Conv2d(input_resolution[1], input_resolution[1], kernel_size=1, groups=input_resolution[1] // window_size),
-            Shift(shift=(-1) ** (layer_idx % 2) * shift_size, dim=1),
-            nn.Conv2d(input_resolution[1], input_resolution[1], kernel_size=1, groups=input_resolution[1] // window_size),
-            Rearrange("b w c h -> b c h w"),
-            nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
-        )
+        self.branches = nn.ModuleList([TokenMixLinear(dim, shift_size) for _ in range(3)])
         self.conv3 = nn.Conv2d(dim, dim, 1, 1, 0, groups=1, bias=as_bias)
 
         self.actn = nn.GELU()
@@ -102,15 +258,18 @@ class MyMLPLayer(nn.Module):
         x = self.norm1(x)
         x = self.actn(x)
                
-        x = self.actn(self.mix_w(x)) + self.actn(self.mix_h(x))
+        u = self.actn(self.branches[0](x))
+        for branch in self.branches[1:]:
+            u += self.actn(branch(x))
+        x = u
+        
         x = self.norm2(x)
-
         x = self.conv3(x)
 
         return x
 
     def extra_repr(self) -> str:
-        return f'dim={self.dim}, window_size={self.window_size}'
+        return f'dim={self.dim}, shift_size={self.shift_size}'
 
     def flops(self, N):
         # calculate flops for 1 window with token length of N
@@ -130,13 +289,13 @@ class MyMLPLayer(nn.Module):
         return flops
 
 
-class MyBlock(nn.Module):
+class MixBlock(nn.Module):
     r""" Swin Transformer Block.
 
     Args:
         dim (int): Number of input channels.
         input_resolution (tuple[int]): Input resulotion.
-        window_size (int): Shift size.
+        shift_size (int): Shift size.
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         as_bias (bool, optional): If True, add a learnable bias to Axial Mlp. Default: True
         drop (float, optional): Dropout rate. Default: 0.0
@@ -145,17 +304,17 @@ class MyBlock(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
-    def __init__(self, dim, input_resolution, window_size=8,
+    def __init__(self, dim, input_resolution, shift_size=7,
                  mlp_ratio=4., as_bias=True, drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, layer_idx=0):
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
-        self.window_size = window_size
+        self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
 
         self.norm1 = norm_layer(dim)
-        self.axial_shift = MyMLPLayer(dim, input_resolution, window_size, as_bias=as_bias, proj_drop=drop, layer_idx=layer_idx)
+        self.axial_shift = MixMLPLayer(dim, shift_size=shift_size, as_bias=as_bias, proj_drop=drop)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -179,7 +338,7 @@ class MyBlock(nn.Module):
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, " \
-               f"window_size={self.window_size}, mlp_ratio={self.mlp_ratio}"
+               f"shift_size={self.shift_size}, mlp_ratio={self.mlp_ratio}"
 
     def flops(self):
         flops = 0
@@ -263,7 +422,7 @@ class BasicLayer(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
     """
 
-    def __init__(self, dim, input_resolution, depth, window_size,
+    def __init__(self, dim, input_resolution, depth, shift_size,
                  mlp_ratio=4., as_bias=True, drop=0.,
                  drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
 
@@ -275,14 +434,13 @@ class BasicLayer(nn.Module):
 
         # build blocks
         self.blocks = nn.ModuleList([
-            MyBlock(dim=dim, input_resolution=input_resolution,
-                              window_size=window_size,
+            MixBlock(dim=dim, input_resolution=input_resolution,
+                              shift_size=shift_size,
                               mlp_ratio=mlp_ratio,
                               as_bias=as_bias,
                               drop=drop, 
                               drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                              norm_layer=norm_layer,
-                              layer_idx=i)
+                              norm_layer=norm_layer)
             for i in range(depth)])
 
         # patch merging layer
@@ -389,7 +547,7 @@ class MixMLP(nn.Module):
 
     def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
                  embed_dim=96, depths=[2, 2, 6, 2], 
-                 window_size=8, mlp_ratio=4., as_bias=True, 
+                 shift_size=5, mlp_ratio=4., as_bias=True, 
                  drop_rate=0., drop_path_rate=0.1,
                  norm_layer=MyNorm, patch_norm=True,
                  use_checkpoint=False, **kwargs):
@@ -422,7 +580,7 @@ class MixMLP(nn.Module):
                                input_resolution=(patches_resolution[0] // (2 ** i_layer),
                                                  patches_resolution[1] // (2 ** i_layer)),
                                depth=depths[i_layer],
-                               window_size=window_size,
+                               shift_size=shift_size,
                                mlp_ratio=self.mlp_ratio,
                                as_bias=as_bias,
                                drop=drop_rate,
@@ -481,7 +639,7 @@ class MixMLP(nn.Module):
 #   ASMLP:
 #     EMBED_DIM: 128
 #     DEPTHS: [ 2, 2, 18, 2 ]
-#     window_size: 5
+#     SHIFT_SIZE: 5
 
 from .registry import register_model
 from ..data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -495,10 +653,10 @@ _cfg = {
 
 
 @register_model
-def mixmlp_base_patch4_window4_224(pretrained=False, **kwargs):
+def mixmlp_base_patch4_shift5_224(pretrained=False, **kwargs):
     model = MixMLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
-        embed_dim=128, depths=[2, 2, 18, 2], window_size=4,
+        embed_dim=128, depths=[2, 2, 18, 2], shift_size=5,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
@@ -506,10 +664,10 @@ def mixmlp_base_patch4_window4_224(pretrained=False, **kwargs):
 
 
 @register_model
-def mixmlp_small_patch4_window4_224(pretrained=False, **kwargs):
+def mixmlp_small_patch4_shift5_224(pretrained=False, **kwargs):
     model = MixMLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
-        embed_dim=96, depths=[2, 2, 18, 2], window_size=4,
+        embed_dim=96, depths=[2, 2, 18, 2], shift_size=5,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
@@ -517,10 +675,10 @@ def mixmlp_small_patch4_window4_224(pretrained=False, **kwargs):
 
 
 @register_model
-def mixmlp_tiny_patch4_window4_256(pretrained=False, **kwargs):
+def mixmlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
     model = MixMLP(
-        img_size=256, patch_size=4, in_chans=3, num_classes=1000,
-        embed_dim=96, depths=[2, 2, 6, 2], window_size=4,
+        img_size=224, patch_size=4, in_chans=3, num_classes=1000,
+        embed_dim=96, depths=[2, 2, 6, 2], shift_size=5,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
