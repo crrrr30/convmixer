@@ -365,7 +365,7 @@ def MyNorm(dim):
     return nn.GroupNorm(1, dim)
 
 
-class Mixer_MLP(nn.Module):
+class MixMLP(nn.Module):
     r""" AS-MLP
         A PyTorch impl of : `AS-MLP: An Axial Shifted MLP Architecture for Vision`  -
           https://arxiv.org/pdf/xxx.xxx
@@ -495,8 +495,8 @@ _cfg = {
 
 
 @register_model
-def mixermlp_base_patch4_window4_224(pretrained=False, **kwargs):
-    model = Mixer_MLP(
+def mixmlp_base_patch4_window4_224(pretrained=False, **kwargs):
+    model = MixMLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=128, depths=[2, 2, 18, 2], window_size=4,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
@@ -506,8 +506,8 @@ def mixermlp_base_patch4_window4_224(pretrained=False, **kwargs):
 
 
 @register_model
-def mixermlp_small_patch4_window4_224(pretrained=False, **kwargs):
-    model = Mixer_MLP(
+def mixmlp_small_patch4_window4_224(pretrained=False, **kwargs):
+    model = MixMLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 18, 2], window_size=4,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
@@ -517,8 +517,8 @@ def mixermlp_small_patch4_window4_224(pretrained=False, **kwargs):
 
 
 @register_model
-def mixermlp_tiny_patch4_window4_256(pretrained=False, **kwargs):
-    model = Mixer_MLP(
+def mixmlp_tiny_patch4_window4_256(pretrained=False, **kwargs):
+    model = MixMLP(
         img_size=256, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 6, 2], window_size=4,
         mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
