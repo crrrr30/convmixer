@@ -172,10 +172,7 @@ class EachRandomShift(nn.Module):
         out = _shift_cuda(x, offsets)
         return out                                                          #, offsets
 
-x = torch.randn(4, 768, 54, 54).cuda().requires_grad_()
-f = EachRandomShift(5)
-y, o = f(x)
-y.sum().backward()
+
 # --------------------------------------------------------
 # My-MLP
 # Licensed under The MIT License [see LICENSE for details]
