@@ -68,6 +68,8 @@ except ImportError as e:
     has_functorch = False
 
 has_compile = hasattr(torch, 'compile')
+if has_compile:
+    torch._dynamo.config.cache_size_limit = 128
 
 
 _logger = logging.getLogger('train')
