@@ -112,6 +112,7 @@ def resume_checkpoint(
         optimizer: torch.optim.Optimizer = None,
         loss_scaler: Any = None,
         log_info: bool = True,
+        model_name: str = ""
 ):
     resume_epoch = None
     if os.path.isfile(checkpoint_path):
@@ -121,7 +122,7 @@ def resume_checkpoint(
                 _logger.info('Restoring model state from checkpoint...')
             state_dict = clean_state_dict(checkpoint['state_dict'])
             
-            if 'mixmlp' in checkpoint['arch'] and isinstance(model, MixMLP):
+            if model_name and 'mixmlp' in checkpoint['arch'] and "mixmlp" in model_name:
                 new_state_dict = OrderedDict()
                 for k, v in checkpoint['state_dict'].items():
                     if 'branches' in k:
