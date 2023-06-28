@@ -6,7 +6,6 @@ import logging
 import os
 from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Union
-from ..models import MixMLP
 
 import torch
 try:
