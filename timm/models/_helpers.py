@@ -6,6 +6,7 @@ import logging
 import os
 from collections import OrderedDict
 from typing import Any, Callable, Dict, Optional, Union
+from ..models import MixMLP
 
 import torch
 try:
@@ -119,6 +120,15 @@ def resume_checkpoint(
             if log_info:
                 _logger.info('Restoring model state from checkpoint...')
             state_dict = clean_state_dict(checkpoint['state_dict'])
+            
+            if 'mixmlp' in checkpoint['arch'] and isinstance(model, MixMLP):
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    if 'branches' in k:
+                        k = k.replace("branches.0.1", "conv2_1").replace("branches.1.1", "conv2_2")
+                    new_state_dict[k] = v
+                state_dict = new_state_dict
+            
             model.load_state_dict(state_dict)
 
             if optimizer is not None and 'optimizer' in checkpoint:
