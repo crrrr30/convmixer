@@ -121,7 +121,7 @@ def resume_checkpoint(
                 _logger.info('Restoring model state from checkpoint...')
             state_dict = clean_state_dict(checkpoint['state_dict'])
             
-            print(bool(model_name), 'mixmlp' in checkpoint['arch'], "mixmlp" in model_name)
+            print(model_name)
             if model_name and 'mixmlp' in checkpoint['arch'] and "mixmlp" in model_name:
                 new_state_dict = OrderedDict()
                 for k, v in checkpoint['state_dict'].items():
