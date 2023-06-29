@@ -71,6 +71,7 @@ class MyFC(nn.Module):
         self.linear1 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
         self.shift2 = MyShiftConj(kernel_size)
         self.linear2 = nn.Conv2d(in_channels, out_channels, 1, 1, 0, bias=bias)
+        self.actn = nn.GELU()
 
     def forward(self, input):
         """
@@ -79,7 +80,7 @@ class MyFC(nn.Module):
         """
         if self.channel_mixer:
             input = self.channel_mixer(input)
-        return self.linear1(self.shift1(input)) + self.linear2(self.shift2(input))
+        return self.actn(self.linear1(self.shift1(input))) + self.actn(self.linear2(self.shift2(input)))
 
 class MyMLPLayer(nn.Module):
     r""" Axial shift  
@@ -135,7 +136,7 @@ class MyMLPLayer(nn.Module):
         '''
         
         x = self.myfc(x)
-        x = self.actn(x)
+        # x = self.actn(x)
         x = self.norm2(x)
 
         x = self.conv3(x)
@@ -531,7 +532,7 @@ def mymlp_base_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=128, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.5, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
@@ -542,7 +543,7 @@ def mymlp_small_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 18, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.3, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
@@ -553,7 +554,7 @@ def mymlp_tiny_patch4_shift5_224(pretrained=False, **kwargs):
     model = My_MLP(
         img_size=224, patch_size=4, in_chans=3, num_classes=1000,
         embed_dim=96, depths=[2, 2, 6, 2], shift_size=5,
-        mlp_ratio=4, drop_rate=0., drop_path_rate=0.05, patch_norm=True,
+        mlp_ratio=4, drop_rate=0., drop_path_rate=0.2, patch_norm=True,
         use_checkpoint=False)
     model.default_cfg = _cfg
     return model
