@@ -128,6 +128,13 @@ def resume_checkpoint(
                         k = k.replace("branches.0.1", "conv2_1").replace("branches.1.1", "conv2_2")
                     new_state_dict[k] = v
                 state_dict = new_state_dict
+            elif model_name and 'mixmlp' in checkpoint['arch'] and "mymlp" in model_name:
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    if 'branches' in k:
+                        k = k.replace("branches.0.1", "myfc.linear1").replace("branches.1.1", "myfc.linear2")
+                    new_state_dict[k] = v
+                state_dict = new_state_dict
             
             model.load_state_dict(state_dict)
 
