@@ -51,8 +51,8 @@ const ${Dtype}* bottom_data, ${Dtype}* top_data, int* offsets) {
     const int w = index % ${width};
 
     ${Dtype} value = 0;
-    const int s1 = offsets[2 * c];
-    const int s2 = offsets[2 * c + 1];
+    const int s1 = offsets[n * 2 * ${channels} + 2 * c];
+    const int s2 = offsets[n * 2 * ${channels} + 2 * c + 1];
     const int h_prime = h + s1;
     const int w_prime = w + s2;
 
@@ -82,8 +82,8 @@ extern "C" __global__ void myshift_backward_grad_input_kernel(
     const int w = index % ${width};
     
     ${Dtype} value = 0;
-    const int s1 = offsets[2 * c];
-    const int s2 = offsets[2 * c + 1];
+    const int s1 = offsets[n * 2 * ${channels} + 2 * c];
+    const int s2 = offsets[n * 2 * ${channels} + 2 * c + 1];
     const int h_prime = h + s1;
     const int w_prime = w + s2;
 
@@ -167,8 +167,9 @@ class EachRandomShift(nn.Module):
         if self.kernel_size == 1:
             return x
 
-        if offsets is None:
-            offsets = torch.randint(-(self.kernel_size // 2), self.kernel_size // 2 + 1, size=(x.shape[1] * 2,)).to(x.device)
+        if offsets is None:            
+            offsets = torch.cuda.IntTensor(x.shape[0], x.shape[1] * 2)
+            torch.randint(-(self.kernel_size // 2), self.kernel_size // 2 + 1, (x.shape[0], x.shape[1] * 2), out=offsets)
         out = _shift_cuda(x, offsets)
         return out                                                          #, offsets
 
