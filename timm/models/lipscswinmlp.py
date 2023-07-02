@@ -103,7 +103,7 @@ class Mlp(nn.Module):
         return x
 
 class MixingAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=8, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=2, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
         self.dim_out = dim_out or dim
@@ -247,7 +247,7 @@ class CSWinMLPTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=96, depth=[2,2,6,2], split_size = [3,5,7],
-                 d=8, num_heads=12, mlp_ratio=4., qkv_bias=True, drop_rate=0., attn_drop_rate=0.,
+                 d=2, num_heads=12, mlp_ratio=4., qkv_bias=True, drop_rate=0., attn_drop_rate=0.,
                  drop_path=0., hybrid_backbone=None, norm_layer=CenterNorm, use_chk=False):
         super().__init__()
         self.use_chk = use_chk
