@@ -381,29 +381,29 @@ class CSWinMLPTransformer(nn.Module):
 
 @register_model
 def CSWinMLP_64_12211_tiny_224(pretrained=False, **kwargs):
-    model = CSWinMLPTransformer(patch_size=4, embed_dim=64, depth=[1,2,21,1],
-        split_size=[1,2,7,7], num_heads=[2,4,4,4], mlp_ratio=4.)
+    model = CSWinMLPTransformer(patch_size=4, embed_dim=64, depth=[4,3,8,3],
+        split_size=[1,2,7,7], num_heads=[1,1,1,1], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswinmlp_224']
     return model
 
 @register_model
 def CSWinMLP_64_24322_small_224(pretrained=False, **kwargs):
     model = CSWinMLPTransformer(patch_size=4, embed_dim=64, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[4,4,4,4], mlp_ratio=4.)
+        split_size=[1,2,7,7], num_heads=[1,1,1,1], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswinmlp_224']
     return model
 
 @register_model
 def CSWinMLP_96_24322_base_224(pretrained=False, **kwargs):
     model = CSWinMLPTransformer(patch_size=4, embed_dim=96, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[4,4,4,8], mlp_ratio=4.)
+        split_size=[1,2,7,7], num_heads=[1,1,1,1], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswinmlp_224']
     return model
 
 @register_model
 def CSWinMLP_144_24322_large_224(pretrained=False, **kwargs):
     model = CSWinMLPTransformer(patch_size=4, embed_dim=144, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[4,4,8,8], mlp_ratio=4.)
+        split_size=[1,2,7,7], num_heads=[1,1,1,1], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswinmlp_224']
     return model
 
