@@ -100,7 +100,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-class LePEAttention(nn.Module):
+class MixingAttention(nn.Module):
     def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=8, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
@@ -142,9 +142,10 @@ class LePEAttention(nn.Module):
         weights = rearrange(self.generate(weights), "b N (h1 w1 h2 w2) -> b N (h1 w1) (h2 w2)",
                             h1=H_sp, w1=W_sp, h2=H_sp, w2=W_sp)
         weights = self.activation(weights)
-        x = rearrange(x, "b (n1 h1 n2 w1) (m d) -> b (n1 n2 m) d (h1 w1)", n1=self.x_windows, n2=self.y_windows, d=self.d) # m = num_heads
+        x = rearrange(x, "b (n1 h1 n2 w1) (m c) -> b (n1 n2 m) c (h1 w1)",
+                      n1=self.x_windows, h1=H_sp, n2=self.y_windows, w1=W_sp, m=self.num_heads)
         x = torch.matmul(x, weights)
-        x = rearrange(x, "b (n1 n2 m) d (h2 w2) -> b (n1 h2 n2 w2) (m d)")
+        x = rearrange(x, "b (n1 n2 m) d (h2 w2) -> b (n1 h2 n2 w2) (m d)", n1=self.x_windows, n2=self.y_windows, h2=H_sp, w2=W_sp)
         x = self.out(x)
 
         return x        # B N C
@@ -177,14 +178,14 @@ class CSWinMLPLayer(nn.Module):
         
         if last_stage:
             self.attns = nn.ModuleList([
-                LePEAttention(
+                MixingAttention(
                     dim, resolution=self.patches_resolution, idx = -1,
                     split_size=split_size, d=d, dim_out=dim, num_heads=num_heads,
                     attn_drop=attn_drop, proj_drop=drop)
                 for i in range(self.branch_num)])
         else:
             self.attns = nn.ModuleList([
-                LePEAttention(
+                MixingAttention(
                     dim//2, resolution=self.patches_resolution, idx = i,
                     split_size=split_size, d=d, dim_out=dim//2, num_heads=num_heads,
                     attn_drop=attn_drop, proj_drop=drop)
@@ -221,24 +222,6 @@ class CSWinMLPLayer(nn.Module):
 
         return x
 
-def img2windows(img, H_sp, W_sp):
-    """
-    img: B C H W
-    """
-    B, C, H, W = img.shape
-    img_reshape = img.view(B, C, H // H_sp, H_sp, W // W_sp, W_sp)
-    img_perm = img_reshape.permute(0, 2, 4, 3, 5, 1).contiguous().reshape(-1, H_sp* W_sp, C)
-    return img_perm
-
-def windows2img(img_splits_hw, H_sp, W_sp, H, W):
-    """
-    img_splits_hw: B' H W C
-    """
-    B = int(img_splits_hw.shape[0] / (H * W / H_sp / W_sp))
-
-    img = img_splits_hw.view(B, H // H_sp, W // W_sp, H_sp, W_sp, -1)
-    img = img.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
-    return img
 
 class Merge_Block(nn.Module):
     def __init__(self, dim, dim_out, norm_layer=CenterNorm):
@@ -257,6 +240,7 @@ class Merge_Block(nn.Module):
         
         return x
 
+
 class CSWinMLPTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
@@ -272,7 +256,7 @@ class CSWinMLPTransformer(nn.Module):
         self.stage1_conv_embed = nn.Sequential(
             nn.Conv2d(in_chans, embed_dim, 7, 4, 2),
             Rearrange('b c h w -> b (h w) c', h = img_size//4, w = img_size//4),
-            nn.LayerNorm(embed_dim)
+            CenterNorm(embed_dim)
         )
 
         curr_dim = embed_dim
@@ -389,16 +373,6 @@ class CSWinMLPTransformer(nn.Module):
         x = self.forward_features(x)
         x = self.head(x)
         return x
-
-
-def _conv_filter(state_dict, patch_size=16):
-    """ convert patch embedding weight from manual patchify + linear proj to conv"""
-    out_dict = {}
-    for k, v in state_dict.items():
-        if 'patch_embed.proj.weight' in k:
-            v = v.reshape((v.shape[0], 3, patch_size, patch_size))
-        out_dict[k] = v
-    return out_dict
 
 ### 224 models
 
