@@ -19,6 +19,8 @@ from einops.layers.torch import Rearrange
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 from einops import rearrange, einsum
+from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
+allow_ops_in_compiled_graph()
 
 def _cfg(url='', **kwargs):
     return {
