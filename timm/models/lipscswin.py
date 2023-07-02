@@ -438,28 +438,28 @@ def _conv_filter(state_dict, patch_size=16):
 @register_model
 def CSWin_64_12211_tiny_224(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=64, depth=[1,2,21,1],
-        split_size=[1,2,7,7], num_heads=[2,4,8,16], mlp_ratio=4., **kwargs)
+        split_size=[1,2,7,7], num_heads=[2,4,8,16], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_224']
     return model
 
 @register_model
 def CSWin_64_24322_small_224(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=64, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[2,4,8,16], mlp_ratio=4., **kwargs)
+        split_size=[1,2,7,7], num_heads=[2,4,8,16], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_224']
     return model
 
 @register_model
 def CSWin_96_24322_base_224(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=96, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[4,8,16,32], mlp_ratio=4., **kwargs)
+        split_size=[1,2,7,7], num_heads=[4,8,16,32], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_224']
     return model
 
 @register_model
 def CSWin_144_24322_large_224(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=144, depth=[2,4,32,2],
-        split_size=[1,2,7,7], num_heads=[6,12,24,24], mlp_ratio=4., **kwargs)
+        split_size=[1,2,7,7], num_heads=[6,12,24,24], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_224']
     return model
 
@@ -468,14 +468,13 @@ def CSWin_144_24322_large_224(pretrained=False, **kwargs):
 @register_model
 def CSWin_96_24322_base_384(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=96, depth=[2,4,32,2],
-        split_size=[1,2,12,12], num_heads=[4,8,16,32], mlp_ratio=4., **kwargs)
+        split_size=[1,2,12,12], num_heads=[4,8,16,32], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_384']
     return model
 
 @register_model
 def CSWin_144_24322_large_384(pretrained=False, **kwargs):
     model = CSWinTransformer(patch_size=4, embed_dim=144, depth=[2,4,32,2],
-        split_size=[1,2,12,12], num_heads=[6,12,24,24], mlp_ratio=4., **kwargs)
+        split_size=[1,2,12,12], num_heads=[6,12,24,24], mlp_ratio=4.)
     model.default_cfg = default_cfgs['cswin_384']
     return model
-
