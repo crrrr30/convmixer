@@ -29,6 +29,7 @@ from .inception_v3 import *
 from .inception_v4 import *
 from .levit import *
 from .lipscswin import *
+from .lipscswinmlp import *
 from .maxxvit import *
 from .metaformer import *
 from .mlp_mixer import *
