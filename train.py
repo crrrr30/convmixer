@@ -210,10 +210,10 @@ group.add_argument('--lr-cycle-limit', type=int, default=1, metavar='N',
                    help='learning rate cycle limit, cycles enabled if > 1')
 group.add_argument('--lr-k-decay', type=float, default=1.0,
                    help='learning rate k-decay for cosine/poly (default: 1.0)')
-group.add_argument('--warmup-lr', type=float, default=1e-5, metavar='LR',
-                   help='warmup learning rate (default: 1e-5)')
-group.add_argument('--min-lr', type=float, default=0, metavar='LR',
-                   help='lower lr bound for cyclic schedulers that hit 0 (default: 0)')
+group.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
+                   help='warmup learning rate (default: 1e-6)')
+group.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
+                   help='lower lr bound for cyclic schedulers that hit 0 (default: 1e-5)')
 group.add_argument('--epochs', type=int, default=300, metavar='N',
                    help='number of epochs to train (default: 300)')
 group.add_argument('--epoch-repeats', type=float, default=0., metavar='N',
@@ -222,13 +222,13 @@ group.add_argument('--start-epoch', default=None, type=int, metavar='N',
                    help='manual epoch number (useful on restarts)')
 group.add_argument('--decay-milestones', default=[90, 180, 270], type=int, nargs='+', metavar="MILESTONES",
                    help='list of decay epoch indices for multistep lr. must be increasing')
-group.add_argument('--decay-epochs', type=float, default=90, metavar='N',
+group.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                    help='epoch interval to decay LR')
 group.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
                    help='epochs to warmup LR, if scheduler supports')
 group.add_argument('--warmup-prefix', action='store_true', default=False,
                    help='Exclude warmup period from decay schedule.'),
-group.add_argument('--cooldown-epochs', type=int, default=0, metavar='N',
+group.add_argument('--cooldown-epochs', type=int, default=10, metavar='N',
                    help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
 group.add_argument('--patience-epochs', type=int, default=10, metavar='N',
                    help='patience epochs for Plateau LR scheduler (default: 10)')
@@ -249,7 +249,7 @@ group.add_argument('--vflip', type=float, default=0.,
                    help='Vertical flip training aug probability')
 group.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
                    help='Color jitter factor (default: 0.4)')
-group.add_argument('--aa', type=str, default=None, metavar='NAME',
+group.add_argument('--aa', type=str, default="None", metavar='NAME',
                    help='Use AutoAugment policy. "v0" or "original". (default: None)'),
 group.add_argument('--aug-repeats', type=float, default=0,
                    help='Number of augmentation repetitions (distributed training only) (default: 0)')
@@ -261,18 +261,18 @@ group.add_argument('--bce-loss', action='store_true', default=False,
                    help='Enable BCE loss w/ Mixup/CutMix use.')
 group.add_argument('--bce-target-thresh', type=float, default=None,
                    help='Threshold for binarizing softened BCE targets (default: None, disabled)')
-group.add_argument('--reprob', type=float, default=0., metavar='PCT',
-                   help='Random erase prob (default: 0.)')
+group.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
+                   help='Random erase prob (default: 0.25)')
 group.add_argument('--remode', type=str, default='pixel',
                    help='Random erase mode (default: "pixel")')
 group.add_argument('--recount', type=int, default=1,
                    help='Random erase count (default: 1)')
 group.add_argument('--resplit', action='store_true', default=False,
                    help='Do not random erase first (clean) augmentation split')
-group.add_argument('--mixup', type=float, default=0.0,
-                   help='mixup alpha, mixup enabled if > 0. (default: 0.)')
-group.add_argument('--cutmix', type=float, default=0.0,
-                   help='cutmix alpha, cutmix enabled if > 0. (default: 0.)')
+group.add_argument('--mixup', type=float, default=0.8,
+                   help='mixup alpha, mixup enabled if > 0. (default: 0.8)')
+group.add_argument('--cutmix', type=float, default=1.0,
+                   help='cutmix alpha, cutmix enabled if > 0. (default: 1.0)')
 group.add_argument('--cutmix-minmax', type=float, nargs='+', default=None,
                    help='cutmix min/max ratio, overrides alpha and enables cutmix if set (default: None)')
 group.add_argument('--mixup-prob', type=float, default=1.0,
@@ -333,7 +333,7 @@ group.add_argument('--checkpoint-hist', type=int, default=10, metavar='N',
 group.add_argument('-j', '--workers', type=int, default=4, metavar='N',
                    help='how many training processes to use (default: 4)')
 group.add_argument('--save-images', action='store_true', default=False,
-                   help='save images of input bathes every log interval for debugging')
+                   help='save images of input batches every log interval for debugging')
 group.add_argument('--amp', action='store_true', default=False,
                    help='use NVIDIA Apex AMP or Native AMP for mixed precision training')
 group.add_argument('--amp-dtype', default='float16', type=str,
@@ -344,7 +344,7 @@ group.add_argument('--no-ddp-bb', action='store_true', default=False,
                    help='Force broadcast buffers for native DDP to off.')
 group.add_argument('--synchronize-step', action='store_true', default=False,
                    help='torch.cuda.synchronize() end of each step')
-group.add_argument('--pin-mem', action='store_true', default=False,
+group.add_argument('--pin-mem', action='store_true', default=True,
                    help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 group.add_argument('--no-prefetcher', action='store_true', default=False,
                    help='disable fast prefetcher')
@@ -359,7 +359,7 @@ group.add_argument('--tta', type=int, default=0, metavar='N',
 group.add_argument("--local_rank", default=0, type=int)
 group.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                    help='use the multi-epochs-loader to save time at the beginning of every epoch')
-group.add_argument('--log-wandb', action='store_true', default=False,
+group.add_argument('--log-wandb', action='store_true', default=True,
                    help='log training and validation metrics to wandb')
 
 
