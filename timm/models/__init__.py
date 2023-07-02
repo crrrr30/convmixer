@@ -28,7 +28,7 @@ from .inception_resnet_v2 import *
 from .inception_v3 import *
 from .inception_v4 import *
 from .levit import *
-from .lipscwin import *
+from .lipscswin import *
 from .maxxvit import *
 from .metaformer import *
 from .mlp_mixer import *
