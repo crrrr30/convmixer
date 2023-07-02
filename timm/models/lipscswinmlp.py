@@ -63,7 +63,7 @@ class DynaMixerOp(nn.Module):
         return x
 
 class MixingAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, reduced_dim=2, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, resolution, idx, num_heads=8, split_size=8, dim_out=None, reduced_dim=2, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
         self.dim_out = dim_out or dim
