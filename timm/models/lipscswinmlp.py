@@ -84,6 +84,7 @@ class MixingAttention(nn.Module):
         self.W_sp = W_sp
         self.x_windows = self.resolution // H_sp
         self.y_windows = self.resolution // W_sp
+        assert self.x_windows == 1 or self.y_windows == 1
 
         self.out = nn.Linear(dim, dim)
         self.compress = nn.Linear(dim, num_heads * reduced_dim)
@@ -99,7 +100,7 @@ class MixingAttention(nn.Module):
         ### Img2Window
         H_sp, W_sp = self.H_sp, self.W_sp
         B, N, C = x.shape
-        weights = rearrange(self.compress(x), "b (n1 h) (n2 w) (m d) -> b (n1 n2 m) (h w d)", 
+        weights = rearrange(self.compress(x), "b (n1 h n2 w) (m d) -> b (n1 n2 m) (h w d)", 
                             n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
         weights = rearrange(self.generate(weights), "b N (h1 w1 h2 w2) -> b N (h1 w1) (h2 w2)",
                             h1=H_sp, w1=W_sp, h2=H_sp, w2=W_sp)
@@ -128,8 +129,8 @@ class DynaMixerBlock(nn.Module):
 
     def forward(self, x):
         B, H, W, C = x.shape
-        h = self.mix_h(x.permute(0, 2, 1, 3).reshape(-1, H, C)).reshape(B, W, H, C).permute(0, 2, 1, 3)
-        w = self.mix_w(x.reshape(-1, W, C)).reshape(B, H, W, C)
+        h = self.mix_h(x.reshape(B, -1, C)).reshape(B, H, W, C).permute(0, 2, 1, 3)
+        w = self.mix_w(x.reshape(B, -1, C)).reshape(B, H, W, C)
         c = self.mlp_c(x)
 
         a = (h + w + c).permute(0, 3, 1, 2).flatten(2).mean(2)
