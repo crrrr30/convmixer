@@ -126,7 +126,6 @@ class MixingAttention(nn.Module):
         self.x_windows = self.resolution // H_sp
         self.y_windows = self.resolution // W_sp
 
-        self.out = nn.Linear(dim, dim)
         self.compress = nn.Linear(dim, num_heads * d)
         self.generate = nn.Linear(H_sp * W_sp * d, (H_sp * W_sp) ** 2)
         self.activation = nn.Softmax(dim=-2)
@@ -137,9 +136,7 @@ class MixingAttention(nn.Module):
         """
         x: B N C
         """
-        ### Img2Window
         H_sp, W_sp = self.H_sp, self.W_sp
-        B, N, C = x.shape
         weights = rearrange(self.compress(x), "b (n1 h n2 w) (m d) -> b (n1 n2 m) (h w d)", 
                             n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
         weights = rearrange(self.generate(weights), "b N (h1 w1 h2 w2) -> b N (h1 w1) (h2 w2)",
@@ -149,7 +146,6 @@ class MixingAttention(nn.Module):
                       n1=self.x_windows, h1=H_sp, n2=self.y_windows, w1=W_sp, m=self.num_heads)
         x = torch.matmul(x, weights)
         x = rearrange(x, "b (n1 n2 m) d (h2 w2) -> b (n1 h2 n2 w2) (m d)", n1=self.x_windows, n2=self.y_windows, h2=H_sp, w2=W_sp)
-        x = self.out(x)
 
         return x        # B N C
 
@@ -167,7 +163,6 @@ class CSWinMLPLayer(nn.Module):
         self.patches_resolution = reso
         self.split_size = split_size
         self.mlp_ratio = mlp_ratio
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.norm1 = norm_layer(dim)
 
         if self.patches_resolution == split_size:
@@ -211,14 +206,14 @@ class CSWinMLPLayer(nn.Module):
         H = W = self.patches_resolution
         B, N, C = x.shape
         assert N == H * W, "flatten img_tokens has wrong size"
-        x = self.norm1(x)
         
+        attended_x = self.norm1(x)
         if self.branch_num == 2:
-            x1 = self.attns[0](x[:,:,:C//2])
-            x2 = self.attns[1](x[:,:,C//2:])
+            x1 = self.attns[0](attended_x[:,:,:C//2])
+            x2 = self.attns[1](attended_x[:,:,C//2:])
             attened_x = torch.cat([x1, x2], dim=2)
         else:
-            attened_x = self.attns[0](x)
+            attened_x = self.attns[0](attended_x)
         attened_x = self.proj(attened_x)
         x = x + self.drop_path(self.alpha1(attened_x))
         x = x + self.drop_path(self.alpha2(self.mlp(self.norm2(x))))
