@@ -295,7 +295,7 @@ class CSWinTransformer(nn.Module):
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=96, depth=[2,2,6,2], split_size = [3,5,7],
                  num_heads=12, mlp_ratio=4., qkv_bias=True, drop_rate=0., attn_drop_rate=0.,
-                 drop_path_rate=0., hybrid_backbone=None, norm_layer=CenterNorm, use_chk=False):
+                 drop_path=0., hybrid_backbone=None, norm_layer=CenterNorm, use_chk=False):
         super().__init__()
         self.use_chk = use_chk
         self.num_classes = num_classes
@@ -309,7 +309,7 @@ class CSWinTransformer(nn.Module):
         )
 
         curr_dim = embed_dim
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, np.sum(depth))]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path, np.sum(depth))]  # stochastic depth decay rule
         self.stage1 = nn.ModuleList([
             CSWinBlock(
                 dim=curr_dim, num_heads=heads[0], reso=img_size//4, mlp_ratio=mlp_ratio,
