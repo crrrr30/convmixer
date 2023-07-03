@@ -254,7 +254,7 @@ class CSWinMLPTransformer(nn.Module):
         self.stage1_conv_embed = nn.Sequential(
             nn.Conv2d(in_chans, embed_dim, 7, 4, 2),
             Rearrange('b c h w -> b (h w) c', h = img_size//4, w = img_size//4),
-            CenterNorm(embed_dim)
+            norm_layer(embed_dim)
         )
 
         curr_dim = embed_dim
