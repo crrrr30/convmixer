@@ -161,7 +161,7 @@ group.add_argument('--head-init-bias', default=None, type=float,
 scripting_group = group.add_mutually_exclusive_group()
 scripting_group.add_argument('--torchscript', dest='torchscript', action='store_true',
                              help='torch.jit.script the full model')
-scripting_group.add_argument('--torchcompile', nargs='?', type=str, default=None, const='inductor',
+scripting_group.add_argument('--torchcompile', nargs='?', type=str, default='inductor', const='inductor',
                              help="Enable compilation w/ specified backend (default: inductor).")
 
 # Optimizer parameters
