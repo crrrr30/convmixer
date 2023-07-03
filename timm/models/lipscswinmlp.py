@@ -5,7 +5,7 @@
 # written By Xiaoyi Dong
 # ------------------------------------------
 
-import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -101,7 +101,6 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
-    
 
 class MixingAttention(nn.Module):
     def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=2, attn_drop=0., proj_drop=0.):
@@ -126,9 +125,8 @@ class MixingAttention(nn.Module):
         self.W_sp = W_sp
         self.x_windows = self.resolution // H_sp
         self.y_windows = self.resolution // W_sp
-        
-        assert dim % num_heads == 0
-        self.compress = nn.Conv1d(dim, num_heads * d, kernel_size=1, groups=num_heads)
+
+        self.compress = nn.Linear(dim, num_heads * d)
         self.generate = nn.Linear(H_sp * W_sp * d, (H_sp * W_sp) ** 2)
         self.activation = nn.Softmax(dim=-2)
 
@@ -139,13 +137,12 @@ class MixingAttention(nn.Module):
         x: B N C
         """
         H_sp, W_sp = self.H_sp, self.W_sp
-        x = rearrange(x, "b n c -> b c n")
-        weights = rearrange(self.compress(x), "b (m d) (n1 h n2 w) -> b (n1 n2 m) (h w d)", 
+        weights = rearrange(self.compress(x), "b (n1 h n2 w) (m d) -> b (n1 n2 m) (h w d)", 
                             n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
         weights = rearrange(self.generate(weights), "b N (h1 w1 h2 w2) -> b N (h1 w1) (h2 w2)",
                             h1=H_sp, w1=W_sp, h2=H_sp, w2=W_sp)
         weights = self.activation(weights)
-        x = rearrange(x, "b (m c) (n1 h1 n2 w1) -> b (n1 n2 m) c (h1 w1)",
+        x = rearrange(x, "b (n1 h1 n2 w1) (m c) -> b (n1 n2 m) c (h1 w1)",
                       n1=self.x_windows, h1=H_sp, n2=self.y_windows, w1=W_sp, m=self.num_heads)
         x = torch.matmul(x, weights)
         x = rearrange(x, "b (n1 n2 m) d (h2 w2) -> b (n1 h2 n2 w2) (m d)", n1=self.x_windows, n2=self.y_windows, h2=H_sp, w2=W_sp)
@@ -318,10 +315,6 @@ class CSWinMLPTransformer(nn.Module):
                 nn.init.constant_(m.bias, 0)
             u, s, v = torch.svd(m.weight)
             m.weight.data = m.weight.data / s[0]
-        elif isinstance(m, nn.Conv1d):
-            d = m.weight.shape[0] // m.groups
-            for i in range(m.groups):
-                torch.nn.init.xavier_normal_(m.weight[i * d : (i + 1) * d, :, 0])
 
         elif isinstance(m, (nn.Conv2d)):
             # torch.nn.init.orthogonal_(m.weight, gain=1)
