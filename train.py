@@ -980,7 +980,7 @@ def train_one_epoch(
                 update_sample_count *= args.world_size
 
             if utils.is_primary(args):
-                total_norm = sum([w.grad.detach().norm() ** 2 for w in model.parameters() if w.requires_grad])
+                total_norm = sum([w.grad.detach().norm() ** 2 for w in model.parameters() if w.grad is not None])
                 if total_norm > 0:
                     norms.update(total_norm)
 
