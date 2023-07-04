@@ -980,11 +980,12 @@ def train_one_epoch(
                 update_sample_count *= args.world_size
 
             if utils.is_primary(args):
-                for p in model.parameters():
-                    param_norm = p.grad.detach().data.norm(2)
-                    total_norm += param_norm.item() ** 2
-                total_norm = total_norm ** 0.5
-                norms.update(total_norm)
+                if list(model.parameters())[0].grad is not None:
+                    for p in model.parameters():
+                        param_norm = p.grad.detach().data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                    total_norm = total_norm ** 0.5
+                    norms.update(total_norm)
 
                 _logger.info(
                     f'Train: {epoch} [{update_idx:>4d}/{updates_per_epoch} '
