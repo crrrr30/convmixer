@@ -181,7 +181,7 @@ class VisionModel(nn.Module):
     def __init__(self, layers, img_size=224, patch_size=4, in_chans=3, num_classes=1000, embed_dims=None,
                  transitions=None, resolutions=None, num_heads=None, reduced_dims=None, mlp_ratios=None, skip_lam=1.0,
                  qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                 norm_layer=nn.LayerNorm, mlp_fn=DynaMixerBlock, overlap=False):
+                 norm_layer=nn.LayerNorm, mlp_fn=DynaMixerBlock, overlap=False, **kwargs):
 
         super().__init__()
         self.num_classes = num_classes
