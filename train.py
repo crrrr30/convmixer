@@ -991,7 +991,7 @@ def train_one_epoch(
                     f'Time: {update_time_m.val:.3f}s, {update_sample_count / update_time_m.val:>7.2f}/s  '
                     f'({update_time_m.avg:.3f}s, {update_sample_count / update_time_m.avg:>7.2f}/s)  '
                     f'LR: {lr:.3e}  '
-                    f'Norm: {total_norm:.3f (norms.avg:.3f)} '
+                    f'Norm: {total_norm:.3f} ({norms.avg:.3f}) '
                     f'Data: {data_time_m.val:.3f} ({data_time_m.avg:.3f})'
                 )
 
