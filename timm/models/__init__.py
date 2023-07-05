@@ -16,6 +16,7 @@ from .densenet import *
 from .dla import *
 from .dpn import *
 from .dynamixer import *
+from .dynalike import *
 from .edgenext import *
 from .efficientformer import *
 from .efficientformer_v2 import *
