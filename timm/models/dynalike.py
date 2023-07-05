@@ -91,7 +91,7 @@ class Sum(nn.Module):
         assert len(fns) == 2
         self.fns = nn.ModuleList(fns)
     def forward(self, x):
-        return self.fns[0](x) + self.fns[1]
+        return self.fns[0](x) + self.fns[1](x)
 
     
 class MixingAttention(nn.Module):
