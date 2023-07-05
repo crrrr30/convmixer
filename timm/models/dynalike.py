@@ -88,10 +88,10 @@ class Downsample(nn.Module):
 class Sum(nn.Module):
     def __init__(self, *fns):
         super().__init__()
-        assert len(fns) == 2
+        assert len(fns) == 3
         self.fns = nn.ModuleList(fns)
     def forward(self, x):
-        return self.fns[0](x) + self.fns[1](x)
+        return self.fns[0](x) + self.fns[1](x) + self.fns[2](x)
 
     
 class MixingAttention(nn.Module):
@@ -122,7 +122,8 @@ class MixingAttention(nn.Module):
         # self.generate = nn.Linear(H_sp * W_sp * d, (H_sp * W_sp) ** 2)
         self.generate = Sum(
             nn.Sequential(nn.Linear(H_sp * W_sp * d, d_i), nn.Linear(d_i, (H_sp * W_sp) ** 2)),
-            nn.Sequential(nn.Linear(H_sp * W_sp * d, d_i), nn.Linear(d_i, (H_sp * W_sp) ** 2))
+            nn.Sequential(nn.Linear(H_sp * W_sp * d, d_i), nn.Linear(d_i, (H_sp * W_sp) ** 2)),
+            nn.Identity()
         )
         self.activation = nn.Softmax(dim=-2)
 
