@@ -95,7 +95,7 @@ class Sum(nn.Module):
 
     
 class MixingAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=2, d_i=24, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=2, d_i=32, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
         self.dim_out = dim_out or dim
