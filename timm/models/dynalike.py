@@ -356,7 +356,7 @@ def dynalike_l(pretrained=False, **kwargs):
     num_heads = [8, 16, 16, 16]
     mlp_ratios = [3, 3, 3, 3]
     embed_dims = [256, 512, 512, 512]
-    reduced_dims = [8, 8, 8, 8]
+    reduced_dims = [4, 4, 4, 4]
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
                         mlp_fn=DynaMixerBlock, **kwargs)
