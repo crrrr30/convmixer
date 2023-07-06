@@ -8,14 +8,10 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
 import torch.utils.checkpoint as checkpoint
 import numpy as np
-from einops import rearrange, einsum
+from einops import rearrange
+from torch import einsum
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
-
-try:
-    from fvcore.nn.jit_handles import get_shape, conv_flop_count
-except ImportError:
-    has_fvcore = False
 
 
 def _cfg(url='', **kwargs):
@@ -95,7 +91,7 @@ class Sum(nn.Module):
 
     
 class MixingAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, num_heads=8, split_size=7, dim_out=None, d=2, d_i=32, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, resolution, idx, num_heads=8, split_size=2, dim_out=None, d=2, d_i=32, init_eps=1e-3, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
         self.dim_out = dim_out or dim
@@ -118,32 +114,28 @@ class MixingAttention(nn.Module):
         self.x_windows = self.resolution // H_sp
         self.y_windows = self.resolution // W_sp
 
-        self.compress = nn.Linear(dim, num_heads * d)
-        # self.generate = nn.Linear(H_sp * W_sp * d, (H_sp * W_sp) ** 2)
-        self.generate = Sum(
-            nn.Sequential(nn.Linear(H_sp * W_sp * d, d_i), nn.Linear(d_i, (H_sp * W_sp) ** 2)),
-            nn.Sequential(nn.Linear(H_sp * W_sp * d, d_i), nn.Linear(d_i, (H_sp * W_sp) ** 2)),
-        )
-        self.activation = nn.Softmax(dim=-2)
-
-        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj_in = nn.Linear(dim, dim * 2)
+        L = H_sp * W_sp
+        self.weight = nn.Parameter(torch.empty(num_heads, L, L))
+        init_eps /= L
+        nn.init.uniform_(self.weight, -init_eps, init_eps)
+        self.bias = nn.Parameter(torch.ones(num_heads, L))
 
     def forward(self, x):
         """
         x: B N C
         """
         H_sp, W_sp = self.H_sp, self.W_sp
-        weights = rearrange(self.compress(x), "b (n1 h) (n2 w) (m d) -> b (n1 n2 m) (h w d)", 
-                            n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
-        weights = rearrange(self.generate(weights), "b N (h1 w1 h2 w2) -> b N (h1 w1) (h2 w2)",
-                            h1=H_sp, w1=W_sp, h2=H_sp, w2=W_sp)
-        weights = self.activation(weights)
-        x = rearrange(x, "b (n1 h1) (n2 w1) (m c) -> b (n1 n2 m) c (h1 w1)",
-                      n1=self.x_windows, h1=H_sp, n2=self.y_windows, w1=W_sp, m=self.num_heads)
-        x = torch.matmul(x, weights)
-        x = rearrange(x, "b (n1 n2 m) d (h2 w2) -> b (n1 h2) (n2 w2) (m d)", n1=self.x_windows, n2=self.y_windows, h2=H_sp, w2=W_sp)
-
-        return x        # B N C
+        x = rearrange(x, "b (n1 h) (n2 w) d -> (b n1 n2) (h w) d", 
+                      n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp)
+        
+        res, gate = self.proj_in(x).chunk(2, dim=-1)
+        gate = rearrange(gate, 'b n (m d) -> b m n d', m=self.num_heads)
+        gate = einsum('b m n d, m n p -> b m p d', gate, self.weight)
+        gate = gate + rearrange(self.bias, 'm n -> () m n ()')
+        gate = rearrange(gate, 'b m n d -> b n (m d)')       
+        return rearrange(gate * res, "(b n1 n2) (h w) d -> b (n1 h) (n2 w) d", 
+                         n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp)        # B N C
 
 
     
