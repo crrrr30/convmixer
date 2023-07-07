@@ -23,6 +23,7 @@ from .efficientformer_v2 import *
 from .efficientnet import *
 from .eva import *
 from .focalnet import *
+from .ftmlp import *
 from .fullmlp import *
 from .gcvit import *
 from .ghostnet import *
