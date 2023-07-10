@@ -29,6 +29,7 @@ from .gcvit import *
 from .ghostnet import *
 from .hardcorenas import *
 from .hrnet import *
+from .hwmlp import *
 from .inception_resnet_v2 import *
 from .inception_v3 import *
 from .inception_v4 import *

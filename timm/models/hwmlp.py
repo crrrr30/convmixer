@@ -9,7 +9,7 @@ from timm.models.registry import register_model
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 from einops import rearrange
-from torch import einsum
+from einops.layers.torch import Rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
 
@@ -91,56 +91,49 @@ class Sum(nn.Module):
 
     
 class MixingAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, num_heads=8, split_size=2, dim_out=None, d=2, d_i=32, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, resolution, idx, num_heads=8, dim_out=None, reduced_dim=2, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.dim = dim
         self.dim_out = dim_out or dim
         self.num_heads = num_heads
         self.resolution = resolution
-        self.split_size = split_size
-        assert self.resolution % self.split_size == 0
-        self.d = d
-        if idx == -1:
-            H_sp, W_sp = self.resolution, self.resolution
-        elif idx == 0:
-            H_sp, W_sp = self.resolution, self.split_size
+        
+        # reduced_dim *= 4
+        self.proj_in = nn.Linear(dim, num_heads * reduced_dim)
+        self.full = nn.Conv1d(num_heads * resolution * reduced_dim, num_heads * resolution * reduced_dim, 
+                              kernel_size=1, groups=num_heads)
+        self.proj_out = nn.Linear(num_heads * reduced_dim, dim)
+        
+        if idx == 0:
+            self.rearrange1 = Rearrange("b h w (m d) -> b (m h d) w", m=self.num_heads)
+            self.rearrange2 = Rearrange("b (m h d) w -> b h w (m d)", m=self.num_heads, h=resolution, w=resolution)
         elif idx == 1:
-            W_sp, H_sp = self.resolution, self.split_size
+            self.rearrange1 = Rearrange("b h w (m d) -> b (m w d) h", m=self.num_heads)
+            self.rearrange2 = Rearrange("b (m w d) h -> b h w (m d)", m=self.num_heads, h=resolution, w=resolution)
         else:
-            print ("ERROR MODE", idx)
-            exit(0)
-        L = H_sp * W_sp
-        self.H_sp = H_sp
-        self.W_sp = W_sp
-        self.x_windows = self.resolution // H_sp
-        self.y_windows = self.resolution // W_sp
-
-        self.proj_in = nn.Linear(dim, num_heads * d)
-        self.full = nn.Linear(num_heads * L * d, L * d)
-        self.proj_out = nn.Linear(num_heads * d, dim)
+            print(f"Unknown idx {idx}")
+            exit(-1)
 
     def forward(self, x):
         """
         x: B H W C
         """
-        H_sp, W_sp = self.H_sp, self.W_sp
         x = self.proj_in(x)
-        x = rearrange(x, "b (n1 h) (n2 w) (m d) -> (b n1 n2) m (h w d)", 
-                      n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
-        w = rearrange(self.full.weight, "d2 (m d1) -> m d2 d1", m=self.num_heads)
-        x = einsum("b m d, m f d -> b m f", x, w) + self.full.bias
-        x = self.proj_out(rearrange(x, "(b n1 n2) m (h w d) -> b (n1 h) (n2 w) (m d)",
-                                    n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads))
+        x = self.rearrange1(x)
+        x = self.full(x)
+        x = self.rearrange2(x)
+        x = self.proj_out(x)
+        
         return x
+    
 
-
-class FullMLPBlock(nn.Module):
+class HWMLPBlock(nn.Module):
     def __init__(self, dim, resolution=32, num_head=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.resolution = resolution
         self.num_head = num_head
-        self.mix_h = MixingAttention(dim, resolution, idx=0, split_size=4, num_heads=self.num_head, d=reduced_dim)
-        self.mix_w = MixingAttention(dim, resolution, idx=1, split_size=4, num_heads=self.num_head, d=reduced_dim)
+        self.mix_h = MixingAttention(dim, resolution, idx=0, num_heads=self.num_head, reduced_dim=reduced_dim)
+        self.mix_w = MixingAttention(dim, resolution, idx=1, num_heads=self.num_head, reduced_dim=reduced_dim)
         self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
         self.reweight = Mlp(dim, dim // 4, dim * 3)
 
@@ -167,7 +160,7 @@ class FullMLPBlock(nn.Module):
 class VisionBlock(nn.Module):
 
     def __init__(self, dim, resolution, num_head, reduced_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=FullMLPBlock):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=HWMLPBlock):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = mlp_fn(dim, resolution=resolution, num_head=num_head, reduced_dim=reduced_dim, qkv_bias=qkv_bias, qk_scale=None,
@@ -188,7 +181,7 @@ class VisionBlock(nn.Module):
 
 
 def basic_blocks(dim, index, layers, resolution, num_head, reduced_dim, mlp_ratio=3., qkv_bias=False, qk_scale=None, \
-                 attn_drop=0, drop_path_rate=0., skip_lam=1.0, mlp_fn=FullMLPBlock, **kwargs):
+                 attn_drop=0, drop_path_rate=0., skip_lam=1.0, mlp_fn=HWMLPBlock, **kwargs):
     blocks = []
 
     for block_idx in range(layers[index]):
@@ -206,7 +199,7 @@ class VisionModel(nn.Module):
     def __init__(self, layers, img_size=224, patch_size=4, in_chans=3, num_classes=1000, embed_dims=None,
                  transitions=None, resolutions=None, num_heads=None, reduced_dims=None, mlp_ratios=None, skip_lam=1.0,
                  qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                 norm_layer=nn.LayerNorm, mlp_fn=FullMLPBlock, overlap=False, **kwargs):
+                 norm_layer=nn.LayerNorm, mlp_fn=HWMLPBlock, overlap=False, **kwargs):
 
         super().__init__()
         self.num_classes = num_classes
@@ -238,6 +231,10 @@ class VisionModel(nn.Module):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Conv1d):
+            trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
@@ -272,14 +269,14 @@ class VisionModel(nn.Module):
     
     
 default_cfgs = {
-    'FullMLP_S': _cfg(crop_pct=0.9),
-    'FullMLP_M': _cfg(crop_pct=0.9),
-    'FullMLP_L': _cfg(crop_pct=0.875),
+    'HWMLP_S': _cfg(crop_pct=0.9),
+    'HWMLP_M': _cfg(crop_pct=0.9),
+    'HWMLP_L': _cfg(crop_pct=0.875),
 }
 
 
 @register_model
-def fullmlp_s(pretrained=False, **kwargs):
+def hwmlp_s(pretrained=False, **kwargs):
     layers = [4, 3, 8, 3]
     transitions = [True, False, False, False]
     resolutions = [32, 16, 16, 16]
@@ -289,13 +286,13 @@ def fullmlp_s(pretrained=False, **kwargs):
     reduced_dims = [2, 2, 2, 2]
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FullMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FullMLP_S']
+                        mlp_fn=HWMLPBlock, **kwargs)
+    model.default_cfg = default_cfgs['HWMLP_S']
     return model
 
 
 @register_model
-def fullmlp_m(pretrained=False, **kwargs):
+def hwmlp_m(pretrained=False, **kwargs):
     layers = [4, 3, 14, 3]
     transitions = [False, True, False, False]
     resolutions = [32, 32, 16, 16]
@@ -305,13 +302,13 @@ def fullmlp_m(pretrained=False, **kwargs):
     reduced_dims = [2, 2, 2, 2]
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FullMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FullMLP_M']
+                        mlp_fn=HWMLPBlock, **kwargs)
+    model.default_cfg = default_cfgs['HWMLP_M']
     return model
 
 
 @register_model
-def fullmlp_l(pretrained=False, **kwargs):
+def hwmlp_l(pretrained=False, **kwargs):
     layers = [8, 8, 16, 4]
     transitions = [True, False, False, False]
     resolutions = [32, 16, 16, 16]
@@ -321,6 +318,6 @@ def fullmlp_l(pretrained=False, **kwargs):
     reduced_dims = [8, 8, 8, 8]
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FullMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FullMLP_L']
+                        mlp_fn=HWMLPBlock, **kwargs)
+    model.default_cfg = default_cfgs['HWMLP_L']
     return model
