@@ -64,6 +64,7 @@ from .swin_transformer import *
 from .swin_transformer_v2 import *
 from .swin_transformer_v2_cr import *
 from .tnt import *
+from .tpmlp import *
 from .tresnet import *
 from .twins import *
 from .vgg import *
