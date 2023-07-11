@@ -90,7 +90,6 @@ class MixingAttention(nn.Module):
         self.num_heads = num_heads
         self.resolution = resolution
         self.split_size = split_size
-        print(split_size)
         assert self.resolution % self.split_size == 0
         self.d = d
         if idx == -1:
