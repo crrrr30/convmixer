@@ -175,7 +175,7 @@ class TppMLPBlock(nn.Module):
             c = self.mlp_c(x)
             
             a = (s + c).permute(0, 3, 1, 2).flatten(2).mean(2)
-            a = self.reweight(a).reshape(B, C, 2).permute(2, 0, 1).softmax(dim=0).unqueeze(2).unsqueeze(2)
+            a = self.reweight(a).reshape(B, C, 2).permute(2, 0, 1).softmax(dim=0).unsqueeze(2).unsqueeze(2)
             
             x = s * a[0] + c * a[1]
 
