@@ -9,6 +9,7 @@ from timm.models.registry import register_model
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 from einops import rearrange
+from einops.layers.torch import Rearrange
 from torch import einsum
 from einops._torch_specific import allow_ops_in_compiled_graph  # requires einops>=0.6.1
 allow_ops_in_compiled_graph()
@@ -55,7 +56,8 @@ class PatchEmbed(nn.Module):
         else:
             padding = 0
             stride = patch_size
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, padding=padding, stride=stride)
+        # self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, padding=padding, stride=stride)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=7, padding=2, stride=4)
 
     def forward(self, x):
         x = self.proj(x)  # B, C, H, W
@@ -81,15 +83,6 @@ class Downsample(nn.Module):
         return x
     
     
-class Sum(nn.Module):
-    def __init__(self, *fns):
-        super().__init__()
-        assert len(fns) == 3
-        self.fns = nn.ModuleList(fns)
-    def forward(self, x):
-        return self.fns[0](x) + self.fns[1](x) + self.fns[2](x)
-
-    
 class MixingAttention(nn.Module):
     def __init__(self, dim, resolution, idx, num_heads=8, split_size=2, dim_out=None, d=2, d_i=32, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -98,11 +91,18 @@ class MixingAttention(nn.Module):
         self.num_heads = num_heads
         self.resolution = resolution
         self.split_size = split_size
-        assert self.resolution % self.split_size == 0
         self.d = d
+        
+        if self.resolution % self.split_size != 0:
+            if self.resolution == 14:
+                self.split_size = split_size = 2
+            elif self.resolution == 7:
+                idx = -1
+        
         if idx == -1:
             H_sp, W_sp = self.resolution, self.resolution
         elif idx == 0:
+            assert self.resolution % self.split_size == 0, f"Split size {split_size} does not divide resolution {resolution}."
             H_sp, W_sp = self.resolution, self.split_size
         elif idx == 1:
             W_sp, H_sp = self.resolution, self.split_size
@@ -124,7 +124,6 @@ class MixingAttention(nn.Module):
         x: B H W C
         """
         H_sp, W_sp = self.H_sp, self.W_sp
-        res = x
         x = self.proj_in(x)
         x = rearrange(x, "b (n1 h) (n2 w) (m d) -> (b n1 n2) m (h w d)", 
                       n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads)
@@ -132,32 +131,53 @@ class MixingAttention(nn.Module):
         x = einsum("b m d, m f d -> b m f", x, w) + self.full.bias
         x = self.proj_out(rearrange(x, "(b n1 n2) m (h w d) -> b (n1 h) (n2 w) (m d)",
                                     n1=self.x_windows, h=H_sp, n2=self.y_windows, w=W_sp, m=self.num_heads))
-        return x + res
+        return x
 
 
-class FTMLPBlock(nn.Module):
-    def __init__(self, dim, resolution=32, num_heads=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+class TppMLPBlock(nn.Module):
+    def __init__(self, dim, resolution=32, num_heads=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., split_size=2):
         super().__init__()
         self.resolution = resolution
         self.num_heads = num_heads
-        self.mix_h = MixingAttention(dim, resolution, idx=0, split_size=4, num_heads=self.num_heads, d=reduced_dim)
-        self.mix_w = MixingAttention(dim, resolution, idx=1, split_size=4, num_heads=self.num_heads, d=reduced_dim)
-        self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
-        self.reweight = Mlp(dim, dim // 4, dim * 3)
+        if resolution != 7:
+            self.mix_h = MixingAttention(dim, resolution // 2, idx=0, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
+            self.mix_w = MixingAttention(dim, resolution // 2, idx=1, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
+            self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
+            self.reweight = Mlp(dim, dim // 4, dim * 3)
+            self.tp1 = Rearrange("b (h n1) (w n2) d -> (b n1 n2) h w d", n1=2, n2=2)
+            self.tp2 = Rearrange("(b n1 n2) h w d -> b (h n1) (w n2) d", n1=2, n2=2)
+        else:
+            self.mix_s = MixingAttention(dim, resolution, idx=-1, num_heads=self.num_heads, d=reduced_dim)
+            self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
+            self.reweight = Mlp(dim, dim // 4, dim * 2)
 
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        
+        
 
     def forward(self, x):
         B, H, W, C = x.shape
-        h = self.mix_h(x)
-        w = self.mix_w(x)
-        c = self.mlp_c(x)
+        
+        if self.resolution != 7:
+            u = self.tp1(x)
+            h = self.tp2(self.mix_h(u))
+            w = self.tp2(self.mix_w(u))
+            c = self.mlp_c(x)
 
-        a = (h + w + c).permute(0, 3, 1, 2).flatten(2).mean(2)
-        a = self.reweight(a).reshape(B, C, 3).permute(2, 0, 1).softmax(dim=0).unsqueeze(2).unsqueeze(2)
+            a = (h + w + c).permute(0, 3, 1, 2).flatten(2).mean(2)
+            a = self.reweight(a).reshape(B, C, 3).permute(2, 0, 1).softmax(dim=0).unsqueeze(2).unsqueeze(2)
 
-        x = h * a[0] + w * a[1] + c * a[2]
+            x = h * a[0] + w * a[1] + c * a[2]
+        
+        else:
+            s = self.mix_s(x)
+            c = self.mlp_c(x)
+            
+            a = (s + c).permute(0, 3, 1, 2).flatten(2).mean(2)
+            a = self.reweight(a).reshape(B, C, 2).permute(2, 0, 1).softmax(dim=0).unqueeze(2).unsqueeze(2)
+            
+            x = s * a[0] + c * a[1]
 
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -167,12 +187,12 @@ class FTMLPBlock(nn.Module):
 
 class VisionBlock(nn.Module):
 
-    def __init__(self, dim, resolution, num_heads, reduced_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=FTMLPBlock):
+    def __init__(self, dim, resolution, num_head, reduced_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=TppMLPBlock, split_size=2):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = mlp_fn(dim, resolution=resolution, num_heads=num_heads, reduced_dim=reduced_dim, qkv_bias=qkv_bias, qk_scale=None,
-                           attn_drop=attn_drop)
+        self.attn = mlp_fn(dim, resolution=resolution, num_heads=num_head, reduced_dim=reduced_dim, qkv_bias=qkv_bias, qk_scale=None,
+                           attn_drop=attn_drop, split_size=split_size)
 
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -188,14 +208,14 @@ class VisionBlock(nn.Module):
         return x
 
 
-def basic_blocks(dim, index, layers, resolution, num_heads, reduced_dim, mlp_ratio=3., qkv_bias=False, qk_scale=None, \
-                 attn_drop=0, drop_path_rate=0., skip_lam=1.0, mlp_fn=FTMLPBlock, **kwargs):
+def basic_blocks(dim, index, layers, resolution, num_head, reduced_dim, mlp_ratio=3., qkv_bias=False, qk_scale=None, \
+                 attn_drop=0, drop_path_rate=0., skip_lam=1.0, mlp_fn=TppMLPBlock, split_size=2, **kwargs):
     blocks = []
 
     for block_idx in range(layers[index]):
         block_dpr = drop_path_rate * (block_idx + sum(layers[:index])) / (sum(layers) - 1)
-        blocks.append(VisionBlock(dim, resolution, num_heads, reduced_dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, \
-                                  attn_drop=attn_drop, drop_path=block_dpr, skip_lam=skip_lam, mlp_fn=mlp_fn))
+        blocks.append(VisionBlock(dim, resolution, num_head, reduced_dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, \
+                                  attn_drop=attn_drop, drop_path=block_dpr, skip_lam=skip_lam, mlp_fn=mlp_fn, split_size=split_size))
 
     blocks = nn.Sequential(*blocks)
 
@@ -207,7 +227,7 @@ class VisionModel(nn.Module):
     def __init__(self, layers, img_size=224, patch_size=4, in_chans=3, num_classes=1000, embed_dims=None,
                  transitions=None, resolutions=None, num_heads=None, reduced_dims=None, mlp_ratios=None, skip_lam=1.0,
                  qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                 norm_layer=nn.LayerNorm, mlp_fn=FTMLPBlock, overlap=False, **kwargs):
+                 norm_layer=nn.LayerNorm, mlp_fn=TppMLPBlock, overlap=False, split_size=2, **kwargs):
 
         super().__init__()
         self.num_classes = num_classes
@@ -219,7 +239,7 @@ class VisionModel(nn.Module):
         for i in range(len(layers)):
             stage = basic_blocks(embed_dims[i], i, layers, resolutions[i], num_heads[i], reduced_dims[i],
                                  mlp_ratio=mlp_ratios[i], qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop_rate,
-                                 drop_path_rate=drop_path_rate, norm_layer=norm_layer, skip_lam=skip_lam, mlp_fn=mlp_fn)
+                                 drop_path_rate=drop_path_rate, norm_layer=norm_layer, skip_lam=skip_lam, mlp_fn=mlp_fn, split_size=split_size)
             network.append(stage)
             if i >= len(layers) - 1:
                 break
@@ -273,55 +293,75 @@ class VisionModel(nn.Module):
     
     
 default_cfgs = {
-    'FTMLP_S': _cfg(crop_pct=0.9),
-    'FTMLP_M': _cfg(crop_pct=0.9),
-    'FTMLP_L': _cfg(crop_pct=0.875),
+    'TppMLP_S': _cfg(crop_pct=0.9),
+    'TppMLP_M': _cfg(crop_pct=0.9),
+    'TppMLP_L': _cfg(crop_pct=0.875),
 }
 
 
 @register_model
-def ftmlp_s(pretrained=False, **kwargs):
-    layers = [4, 3, 8, 3]
-    transitions = [True, False, False, False]
-    resolutions = [32, 16, 16, 16]
+def tppmlp_t(pretrained=False, **kwargs):
+    layers = [2, 3, 10, 3]
+    transitions = [True, True, True, False]
+    resolutions = [56, 28, 14, 7]
     num_heads = [8, 16, 16, 16]
-    mlp_ratios = [3, 3, 3, 3]
-    embed_dims = [192, 384, 384, 384]
-    reduced_dims = [2, 2, 2, 2]
+    mlp_ratios = [4, 4, 4, 4]
+    embed_dims = [64, 128, 320, 512]
+    reduced_dims = [2, 4, 4, 8]
+    split_size = 4
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FTMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FTMLP_S']
+                        mlp_fn=TppMLPBlock, split_size=split_size, **kwargs)
+    model.default_cfg = default_cfgs['TppMLP_S']
     return model
 
 
 @register_model
-def ftmlp_m(pretrained=False, **kwargs):
-    layers = [4, 3, 14, 3]
-    transitions = [False, True, False, False]
-    resolutions = [32, 32, 16, 16]
+def tppmlp_s(pretrained=False, **kwargs):
+    layers = [3, 4, 18, 3]
+    transitions = [True, True, True, False]
+    resolutions = [56, 28, 14, 7]
+    num_heads = [8, 16, 16, 16]
+    mlp_ratios = [8, 8, 4, 4]
+    embed_dims = [64, 128, 320, 512]
+    reduced_dims = [2, 4, 4, 8]
+    split_size = 4
+    model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
+                        resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
+                        mlp_fn=TppMLPBlock, split_size=split_size, **kwargs)
+    model.default_cfg = default_cfgs['TppMLP_S']
+    return model
+
+
+@register_model
+def tppmlp_b(pretrained=False, **kwargs):
+    layers = [3, 8, 27, 3]
+    transitions = [True, True, True, False]
+    resolutions = [56, 28, 14, 7]
     num_heads = [8, 8, 16, 16]
-    mlp_ratios = [3, 3, 3, 3]
-    embed_dims = [256, 256, 512, 512]
-    reduced_dims = [2, 2, 2, 2]
+    mlp_ratios = [8, 8, 4, 4]
+    embed_dims = [64, 128, 320, 512]
+    reduced_dims = [2, 4, 4, 8]
+    split_size = 4
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FTMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FTMLP_M']
+                        mlp_fn=TppMLPBlock, split_size=split_size, **kwargs)
+    model.default_cfg = default_cfgs['TppMLP_M']
     return model
 
 
 @register_model
-def ftmlp_l(pretrained=False, **kwargs):
-    layers = [8, 8, 16, 4]
-    transitions = [True, False, False, False]
-    resolutions = [32, 16, 16, 16]
+def tppmlp_l(pretrained=False, **kwargs):
+    layers = [3, 4, 24, 3]
+    transitions = [True, True, True, False]
+    resolutions = [56, 28, 14, 7]
     num_heads = [8, 16, 16, 16]
-    mlp_ratios = [3, 3, 3, 3]
-    embed_dims = [256, 512, 512, 512]
-    reduced_dims = [4, 4, 4, 4]
+    mlp_ratios = [4, 4, 4, 4]
+    embed_dims = [96, 192, 384, 768]
+    reduced_dims = [2, 4, 4, 8]
+    split_size = 4
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
-                        mlp_fn=FTMLPBlock, **kwargs)
-    model.default_cfg = default_cfgs['FTMLP_L']
+                        mlp_fn=TppMLPBlock, split_size=split_size, **kwargs)
+    model.default_cfg = default_cfgs['TppMLP_L']
     return model

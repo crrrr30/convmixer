@@ -127,12 +127,12 @@ class MixingAttention(nn.Module):
 
 
 class TpMLPBlock(nn.Module):
-    def __init__(self, dim, resolution=32, num_head=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., split_size=2):
+    def __init__(self, dim, resolution=32, num_heads=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., split_size=2):
         super().__init__()
         self.resolution = resolution
-        self.num_head = num_head
-        self.mix_h = MixingAttention(dim, resolution // 2, idx=0, split_size=split_size, num_heads=self.num_head, d=reduced_dim)
-        self.mix_w = MixingAttention(dim, resolution // 2, idx=1, split_size=split_size, num_heads=self.num_head, d=reduced_dim)
+        self.num_heads = num_heads
+        self.mix_h = MixingAttention(dim, resolution // 2, idx=0, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
+        self.mix_w = MixingAttention(dim, resolution // 2, idx=1, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
         self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
         self.reweight = Mlp(dim, dim // 4, dim * 3)
 
@@ -163,11 +163,11 @@ class TpMLPBlock(nn.Module):
 
 class VisionBlock(nn.Module):
 
-    def __init__(self, dim, resolution, num_head, reduced_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+    def __init__(self, dim, resolution, num_heads, reduced_dim, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, skip_lam=1.0, mlp_fn=TpMLPBlock, split_size=2):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = mlp_fn(dim, resolution=resolution, num_head=num_head, reduced_dim=reduced_dim, qkv_bias=qkv_bias, qk_scale=None,
+        self.attn = mlp_fn(dim, resolution=resolution, num_heads=num_heads, reduced_dim=reduced_dim, qkv_bias=qkv_bias, qk_scale=None,
                            attn_drop=attn_drop, split_size=split_size)
 
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
@@ -184,13 +184,13 @@ class VisionBlock(nn.Module):
         return x
 
 
-def basic_blocks(dim, index, layers, resolution, num_head, reduced_dim, mlp_ratio=3., qkv_bias=False, qk_scale=None, \
+def basic_blocks(dim, index, layers, resolution, num_heads, reduced_dim, mlp_ratio=3., qkv_bias=False, qk_scale=None, \
                  attn_drop=0, drop_path_rate=0., skip_lam=1.0, mlp_fn=TpMLPBlock, split_size=2, **kwargs):
     blocks = []
 
     for block_idx in range(layers[index]):
         block_dpr = drop_path_rate * (block_idx + sum(layers[:index])) / (sum(layers) - 1)
-        blocks.append(VisionBlock(dim, resolution, num_head, reduced_dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, \
+        blocks.append(VisionBlock(dim, resolution, num_heads, reduced_dim, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, \
                                   attn_drop=attn_drop, drop_path=block_dpr, skip_lam=skip_lam, mlp_fn=mlp_fn, split_size=split_size))
 
     blocks = nn.Sequential(*blocks)
