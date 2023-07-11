@@ -133,7 +133,11 @@ class TpMLPBlock(nn.Module):
         self.num_heads = num_heads
         self.mix_h = MixingAttention(dim, resolution // 2, idx=0, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
         self.mix_w = MixingAttention(dim, resolution // 2, idx=1, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
-        self.mlp_c = nn.Linear(dim, dim, bias=qkv_bias)
+        self.mlp_c = nn.Sequential(
+            Rearrange("b (h n1) (w n2) c -> b (c n1 n2) h w", n1=2, n2=2),
+            nn.Conv2d(4 * dim, 4 * dim, kernel_size=1, groups=dim),
+            Rearrange("b (c n1 n2) h w -> b (h n1) (w n2) c", n1=2, n2=2)
+        )
         self.reweight = Mlp(dim, dim // 4, dim * 3)
 
         self.proj = nn.Linear(dim, dim)
@@ -283,7 +287,7 @@ def tpmlp_s(pretrained=False, **kwargs):
     num_heads = [8, 16, 16, 16]
     mlp_ratios = [3, 3, 3, 3]
     embed_dims = [192, 384, 384, 384]
-    reduced_dims = [2, 2, 2, 2]
+    reduced_dims = [4, 4, 4, 4]
     split_size = 4
     model = VisionModel(layers, embed_dims=embed_dims, patch_size=7, transitions=transitions,
                         resolutions=resolutions, num_heads=num_heads, reduced_dims=reduced_dims, mlp_ratios=mlp_ratios,
