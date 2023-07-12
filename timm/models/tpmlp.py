@@ -126,6 +126,19 @@ class MixingAttention(nn.Module):
         return x
 
 
+class MixC(nn.Module):
+    def __init__(self, resolution, dim, n=2):
+        super().__init__()
+        self.rearrange1 = Rearrange("b (h n1) (w n2) c -> (b h w) c (n1 n2)", n1=n, n2=n)
+        self.weight = nn.Parameter(torch.randn(dim, n * n, n * n))
+        self.bias = nn.Parameter(torch.zeros(dim, n * n))
+        self.rearrange2 = Rearrange("(b h w) c (n1 n2) -> b (h n1) (w n2) c", h=resolution//n, w=resolution//n, n1=n, n2=n)
+    def forward(self, x):
+        x = self.rearrange1(x)
+        x = torch.einsum("b m d, m d D -> b m D", x, self.weight) + self.bias
+        return self.rearrange2(x)
+
+
 class TpMLPBlock(nn.Module):
     def __init__(self, dim, resolution=32, num_heads=8, reduced_dim=2, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., split_size=2):
         super().__init__()
@@ -133,11 +146,7 @@ class TpMLPBlock(nn.Module):
         self.num_heads = num_heads
         self.mix_h = MixingAttention(dim, resolution // 2, idx=0, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
         self.mix_w = MixingAttention(dim, resolution // 2, idx=1, split_size=split_size, num_heads=self.num_heads, d=reduced_dim)
-        self.mlp_c = nn.Sequential(
-            Rearrange("b (h n1) (w n2) c -> b (c n1 n2) h w", n1=2, n2=2),
-            nn.Conv2d(4 * dim, 4 * dim, kernel_size=1, groups=dim),
-            Rearrange("b (c n1 n2) h w -> b (h n1) (w n2) c", n1=2, n2=2)
-        )
+        self.mlp_c = MixC(resolution, dim)
         self.reweight = Mlp(dim, dim // 4, dim * 3)
 
         self.proj = nn.Linear(dim, dim)
