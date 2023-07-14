@@ -597,3 +597,11 @@ def tpmlp_b(pretrained=False, **kwargs):
                         reduced_dims=[4, 4, 4, 4], **kwargs)
     model.default_cfg = default_cfgs['TpMLP_L']
     return model
+
+@register_model
+def tpmlp_l(pretrained=False, **kwargs):
+    model = CrossFormer(embed_dim=128, depths=[2, 2, 18, 2], num_heads=[4, 8, 16, 32], group_size=[7, 7, 7, 7],
+                        patch_size=[4, 8, 16, 32], merge_size=[[2, 4], [2, 4], [2, 4]], drop_path_rate=0.5, 
+                        reduced_dims=[4, 4, 4, 4], **kwargs)
+    model.default_cfg = default_cfgs['TpMLP_L']
+    return model
