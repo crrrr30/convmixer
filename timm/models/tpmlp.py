@@ -70,7 +70,7 @@ class Attention(nn.Module):
         
         self.weight = nn.Parameter(torch.empty(num_heads, seq_len * reduced_dim, seq_len * reduced_dim))
         trunc_normal_(self.weight, std=.02)
-        self.bias = nn.Parameter(torch.ones(num_heads, seq_len * reduced_dim))
+        self.bias = nn.Parameter(torch.zeros(num_heads, seq_len * reduced_dim))
         
         self.v_proj = nn.Linear(num_heads *  reduced_dim, dim); self.v_proj.seq_len = seq_len; self.v_proj.stable=True
         
@@ -522,11 +522,11 @@ class CrossFormer(nn.Module):
             if hasattr(m, "stable") and m.stable:
                 # print("Stable init.")
                 nn.init.uniform_(m.weight, -init_eps/m.seq_len, init_eps/m.seq_len)
-        
+                nn.init.constant_(m.bias, 1)
             else:
                 trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
